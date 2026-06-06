@@ -18,6 +18,7 @@ pub enum Unit {
     MegaBytes,
     GigaBytes,
     MegaHertz,
+    MicroSeconds,
 }
 
 impl Unit {
@@ -74,6 +75,7 @@ impl fmt::Display for Unit {
             Unit::MegaBytes => write!(f, "MegaBytes"),
             Unit::GigaBytes => write!(f, "GigaBytes"),
             Unit::MegaHertz => write!(f, "MegaHertz"),
+            Unit::MicroSeconds => write!(f, "MicroSeconds"),
             Unit::Numeric => write!(f, ""),
         }
     }

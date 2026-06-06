@@ -362,10 +362,7 @@ impl Topology {
             //    socket_counter = socket_counter + 1;
             //}
             //}
-        } else {
-            panic!("Couldn't retrieve any CPU Core from the topology. (generate_cpu_cores)");
-        }
-    }
+    //
 
     /// Triggers ProcessTracker refresh on process stats
     /// and power consumption, CPU stats and cores power comsumption,
@@ -386,6 +383,7 @@ impl Topology {
             //}
         }
         self.proc_tracker.refresh();
+        self.refresh_core_idle_records();
         self.refresh_procs();
         self.refresh_record();
         self.refresh_stats();
@@ -473,41 +471,14 @@ impl Topology {
     // NOTE: create a function that would use the records diff and map it to cores using frequency
     // and c-states
     pub fn get_records_diff_power_microwatts_per_core(&self) -> Option<Vec<(CPUCore, Record)>> {
-        let out: Vec<(CPUCore, Record)> = vec![];
         for s in &self.sockets {
-            let total: i128 = 0;
-            if let Ok(r) = s.read_record() {
-                match r.value.trim().parse::<i128>() {
-                    Ok(val) => {
-                        total += val;
-                    }
-                    Err(e) => {
-                        warn!("could'nt convert {} to i128: {}", r.value.trim(), e);
-                    }
+            if let Some(_) = s.get_records_diff_power_microwatts() {
+                for c in s.get_cores_passive() {
+                    info!("Core {} total idle time percentage: {}", c.id, c.get_idle_time_delta_percentage().unwrap());
                 }
             }
-            for d in &s.domains {
-                if d.name == "dram" {
-                    if let Ok(dr) = d.read_record() {
-                        match dr.value.trim().parse::<i128>() {
-                            Ok(val) => {
-                                total += val;
-                            }
-                            Err(e) => {
-                                warn!("could'nt convert {} to i128: {}", dr.value.trim(), e);
-                            }
-                        }
-                    }
-                }
-            }
-            for c in s.get_cores_passive() {
-            }
         }
-        if let Some(_total) = self.get_records_diff_power_microwatts() {
-            Some(Vec::<Record>::new())
-        } else {
-            None
-        }
+        None
     }
 
     /// Returns a Record instance containing the power consumed between
@@ -780,18 +751,15 @@ impl Topology {
         }
     }
 
-    /// TO MODIFY
-    /// Returns the power consumed between last and previous measurement for a given process ID, in microwatts
     pub fn get_process_power_consumption_microwatts(&self, pid: Pid) -> Option<Record> {
+        debug!("Hello Loser");
+        info!("Hello Loser");
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
-            // NOTE: This should be a per core usage percentage
+            self.get_records_diff_power_microwatts_per_core();
             let process_cpu_percentage = self.get_process_cpu_usage_percentage(pid).unwrap();
-            // NOTE: This should return a per core diff power microwatts
             let topo_conso = self.get_records_diff_power_microwatts();
             if let Some(conso) = &topo_conso {
                 let conso_f64 = conso.value.parse::<f64>().unwrap();
-                // NOTE: change this to sum per core process energy (process core percentage *
-                // core_energy / 100)
                 let result =
                     (conso_f64 * process_cpu_percentage.value.parse::<f64>().unwrap()) / 100.0_f64;
                 return Some(Record::new(
@@ -806,6 +774,8 @@ impl Topology {
         None
     }
 
+    /// NOTE: TO MODIFY
+    /// Returns the power consumed between last and previous measurement for a given process ID, in microwatts
     pub fn get_all_per_process(&self, pid: Pid) -> Option<HashMap<String, (String, Record)>> {
         let mut res = HashMap::new();
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
@@ -887,9 +857,14 @@ impl Topology {
                     ),
                 ),
             );
+            self.get_records_diff_power_microwatts_per_core();
+            // NOTE: This should be a per core usage percentage
+            // NOTE: This should return a per core diff power microwatts
             let topo_conso = self.get_records_diff_power_microwatts();
             if let Some(conso) = &topo_conso {
                 let conso_f64 = conso.value.parse::<f64>().unwrap();
+                // NOTE: change this to sum per core process energy (process core percentage *
+                // core_energy / 100)
                 let result = (conso_f64 * process_cpu_percentage as f64) / 100.0_f64;
                 res.insert(
                     String::from("scaph_process_power_consumption_microwatts"),
@@ -1029,6 +1004,7 @@ impl Topology {
         None
     }
 }
+
 
 // !!!!!!!!!!!!!!!!! CPUSocket !!!!!!!!!!!!!!!!!!!!!!!
 /// CPUSocket struct represents a CPU socket (matches physical_id attribute in /proc/cpuinfo),
@@ -1397,6 +1373,7 @@ pub struct CPUCore {
 impl RecordGenerator for CPUCore {
     /// Refresh and store a new cpuidle idle time record for this core.
     fn refresh_record(&mut self) {
+        debug!("CPU Core: {} new record added", self.id);
         match self.read_record() {
             Ok(record) => {
                 self.record_buffer.push(record);
@@ -1440,7 +1417,7 @@ impl RecordGenerator for CPUCore {
             result.push(Record::new(
                 r.timestamp,
                 r.value.clone(),
-                units::Unit::MicroJoule,
+                units::Unit::MicroSeconds,
             ));
         }
         result
@@ -1464,7 +1441,7 @@ impl RecordReader for CPUCore {
                     if state_path.is_dir() {
                         let state_name = state_path
                             .file_name()
-                            .and_then(|n| n.into_string().ok());
+                            .and_then(|n| n.to_str());
 
                         if let Some(name) = state_name {
                             // Skip state0 (C0, active state)
@@ -1486,7 +1463,7 @@ impl RecordReader for CPUCore {
             Ok(Record::new(
                 current_system_time_since_epoch(),
                 total_idle_us.to_string(),
-                units::Unit::MicroJoule, // Using MicroJoule as unit for microseconds
+                units::Unit::MicroSeconds,
             ))
         }
         #[cfg(not(target_os = "linux"))]
@@ -1522,7 +1499,7 @@ impl CPUCore {
 
     /// Returns the difference in idle CPU time (microseconds) between the last two records.
     /// Returns None if there are fewer than 2 records.
-    pub fn get_idle_time_delta_microseconds(&self) -> Option<u64> {
+    pub fn get_idle_time_delta_percentage(&self) -> Option<u64> {
         if self.record_buffer.len() > 1 {
             let last = self.record_buffer.last().unwrap();
             let previous = self.record_buffer.get(self.record_buffer.len() - 2).unwrap();
@@ -1531,9 +1508,15 @@ impl CPUCore {
                 last.value.trim().parse::<u64>(),
                 previous.value.trim().parse::<u64>(),
             ) {
+                let last_timestamp = last.timestamp;
+                let prev_timestamp = previous.timestamp; 
                 if last_val >= prev_val {
-                    return Some(last_val - prev_val);
+                    return Some(
+                        (((last_val - prev_val) as f64 / (last_timestamp - prev_timestamp).as_micros() as f64) * 100_f64) as u64
+                    );
+
                 }
+
             }
         }
         None
