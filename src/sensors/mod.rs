@@ -5,6 +5,7 @@
 
 #[cfg(target_os = "windows")]
 pub mod msr_rapl;
+use docker_sync::network;
 #[cfg(target_os = "windows")]
 use msr_rapl::get_msr_value;
 #[cfg(target_os = "linux")]
@@ -13,7 +14,7 @@ pub mod units;
 pub mod utils;
 #[cfg(target_os = "linux")]
 use procfs::{CpuInfo, CpuTime, KernelStats};
-use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration};
+use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration, vec};
 #[allow(unused_imports)]
 use sysinfo::{CpuExt, Pid, System, SystemExt};
 use sysinfo::{DiskExt, DiskType};
@@ -310,9 +311,37 @@ impl Topology {
                     warn!("coud't not match core to socket - mapping to first socket instead - if you are not using --vm there is something wrong")
                 }
             }
+        } else {
+            panic!("Couldn't retrieve any CPU Core from the topology. (generate_cpu_cores)");
+        }
+    }
 
+    /// Refresh cpuidle idle time records for all cores in all sockets.
+    fn refresh_core_idle_records(&mut self) {
+        for socket in &mut self.sockets {
+            for core in socket.get_cores() {
+                core.refresh_record();
+            }
+        }
+    }
+}
+
+// Placeholder for now to avoid duplicate code structure issues
+#[cfg(not(target_os = "linux"))]
+impl Topology {
+    fn refresh_core_idle_records(&mut self) {}
+}
+
+#[cfg(target_os = "linux")]
+impl Topology {
+    // refresh_core_idle_records is implemented above
+}
+
+// Re-open the impl block to add remaining methods
+impl Topology {
+    /// (Existing methods continue here)
             //#[cfg(target_os = "windows")]
-            //{
+            //{{
             //TODO: fix
             //let nb_sockets = &self.sockets.len();
             //let mut socket_counter = 0;
@@ -439,6 +468,46 @@ impl Topology {
             }
         }
         None
+    }
+
+    // NOTE: create a function that would use the records diff and map it to cores using frequency
+    // and c-states
+    pub fn get_records_diff_power_microwatts_per_core(&self) -> Option<Vec<(CPUCore, Record)>> {
+        let out: Vec<(CPUCore, Record)> = vec![];
+        for s in &self.sockets {
+            let total: i128 = 0;
+            if let Ok(r) = s.read_record() {
+                match r.value.trim().parse::<i128>() {
+                    Ok(val) => {
+                        total += val;
+                    }
+                    Err(e) => {
+                        warn!("could'nt convert {} to i128: {}", r.value.trim(), e);
+                    }
+                }
+            }
+            for d in &s.domains {
+                if d.name == "dram" {
+                    if let Ok(dr) = d.read_record() {
+                        match dr.value.trim().parse::<i128>() {
+                            Ok(val) => {
+                                total += val;
+                            }
+                            Err(e) => {
+                                warn!("could'nt convert {} to i128: {}", dr.value.trim(), e);
+                            }
+                        }
+                    }
+                }
+            }
+            for c in s.get_cores_passive() {
+            }
+        }
+        if let Some(_total) = self.get_records_diff_power_microwatts() {
+            Some(Vec::<Record>::new())
+        } else {
+            None
+        }
     }
 
     /// Returns a Record instance containing the power consumed between
@@ -711,13 +780,18 @@ impl Topology {
         }
     }
 
+    /// TO MODIFY
     /// Returns the power consumed between last and previous measurement for a given process ID, in microwatts
     pub fn get_process_power_consumption_microwatts(&self, pid: Pid) -> Option<Record> {
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
+            // NOTE: This should be a per core usage percentage
             let process_cpu_percentage = self.get_process_cpu_usage_percentage(pid).unwrap();
+            // NOTE: This should return a per core diff power microwatts
             let topo_conso = self.get_records_diff_power_microwatts();
             if let Some(conso) = &topo_conso {
                 let conso_f64 = conso.value.parse::<f64>().unwrap();
+                // NOTE: change this to sum per core process energy (process core percentage *
+                // core_energy / 100)
                 let result =
                     (conso_f64 * process_cpu_percentage.value.parse::<f64>().unwrap()) / 100.0_f64;
                 return Some(Record::new(
@@ -1314,12 +1388,123 @@ impl CPUSocket {
 pub struct CPUCore {
     pub id: u16,
     pub attributes: HashMap<String, String>,
+    /// Idle CPU time records (sum of all non-C0 cpuidle states, in microseconds)
+    pub record_buffer: Vec<Record>,
+    /// Maximum size of record_buffer in kilobytes
+    pub buffer_max_kbytes: u16,
+}
+
+impl RecordGenerator for CPUCore {
+    /// Refresh and store a new cpuidle idle time record for this core.
+    fn refresh_record(&mut self) {
+        match self.read_record() {
+            Ok(record) => {
+                self.record_buffer.push(record);
+            }
+            Err(e) => {
+                debug!(
+                    "Couldn't read cpuidle record from cpu{}: {:?}",
+                    self.id, e
+                );
+            }
+        }
+        if !self.record_buffer.is_empty() {
+            self.clean_old_records();
+        }
+    }
+
+    /// Remove old records to keep buffer size within limit.
+    fn clean_old_records(&mut self) {
+        if self.record_buffer.is_empty() {
+            return;
+        }
+        let record_ptr = &self.record_buffer[0];
+        let curr_size = size_of_val(record_ptr) * self.record_buffer.len();
+        if curr_size > (self.buffer_max_kbytes * 1000) as usize {
+            let size_diff = curr_size - (self.buffer_max_kbytes * 1000) as usize;
+            if size_diff > size_of_val(record_ptr) {
+                let nb_records_to_delete = size_diff as f32 / size_of_val(record_ptr) as f32;
+                for _ in 1..nb_records_to_delete as u32 {
+                    if !self.record_buffer.is_empty() {
+                        self.record_buffer.remove(0);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Return a copy of all records in the buffer.
+    fn get_records_passive(&self) -> Vec<Record> {
+        let mut result = vec![];
+        for r in &self.record_buffer {
+            result.push(Record::new(
+                r.timestamp,
+                r.value.clone(),
+                units::Unit::MicroJoule,
+            ));
+        }
+        result
+    }
+}
+
+impl RecordReader for CPUCore {
+    /// Read idle CPU time (non-C0 cpuidle states sum) from sysfs for this core.
+    /// Returns the total idle time in microseconds as a Record.
+    fn read_record(&self) -> Result<Record, Box<dyn Error>> {
+        #[cfg(target_os = "linux")]
+        {
+            let mut total_idle_us: u64 = 0;
+            let base_path = format!("/sys/devices/system/cpu/cpu{}/cpuidle", self.id);
+
+            // Read all cpuidle states except C0 (which is typically state0 and represents active time)
+            // We iterate through state directories and sum their time values
+            if let Ok(entries) = fs::read_dir(&base_path) {
+                for entry in entries.flatten() {
+                    let state_path = entry.path();
+                    if state_path.is_dir() {
+                        let state_name = state_path
+                            .file_name()
+                            .and_then(|n| n.into_string().ok());
+
+                        if let Some(name) = state_name {
+                            // Skip state0 (C0, active state)
+                            if name == "state0" {
+                                continue;
+                            }
+
+                            let time_file = state_path.join("time");
+                            if let Ok(time_str) = fs::read_to_string(time_file) {
+                                if let Ok(time_us) = time_str.trim().parse::<u64>() {
+                                    total_idle_us += time_us;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(Record::new(
+                current_system_time_since_epoch(),
+                total_idle_us.to_string(),
+                units::Unit::MicroJoule, // Using MicroJoule as unit for microseconds
+            ))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err("cpuidle reading only supported on Linux".into())
+        }
+    }
 }
 
 impl CPUCore {
     /// Instantiates CPUCore and returns the instance.
     pub fn new(id: u16, attributes: HashMap<String, String>) -> CPUCore {
-        CPUCore { id, attributes }
+        CPUCore {
+            id,
+            attributes,
+            record_buffer: vec![],
+            buffer_max_kbytes: 1,
+        }
     }
 
     /// Reads content from /proc/stat and extracts the stats of the CPU core
@@ -1330,6 +1515,25 @@ impl CPUCore {
                 return Some(CPUStat::from_procfs_cputime(
                     kernelstats.cpu_time.remove(self.id as usize),
                 ));
+            }
+        }
+        None
+    }
+
+    /// Returns the difference in idle CPU time (microseconds) between the last two records.
+    /// Returns None if there are fewer than 2 records.
+    pub fn get_idle_time_delta_microseconds(&self) -> Option<u64> {
+        if self.record_buffer.len() > 1 {
+            let last = self.record_buffer.last().unwrap();
+            let previous = self.record_buffer.get(self.record_buffer.len() - 2).unwrap();
+
+            if let (Ok(last_val), Ok(prev_val)) = (
+                last.value.trim().parse::<u64>(),
+                previous.value.trim().parse::<u64>(),
+            ) {
+                if last_val >= prev_val {
+                    return Some(last_val - prev_val);
+                }
             }
         }
         None
