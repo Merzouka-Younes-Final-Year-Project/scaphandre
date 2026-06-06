@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, fmt};
+use std::{cmp::Ordering, fmt::{self, write}};
 
 // !!!!!!!!!!!!!!!!! Unit !!!!!!!!!!!!!!!!!!!!!!!
 #[derive(Debug)]
@@ -19,6 +19,7 @@ pub enum Unit {
     GigaBytes,
     MegaHertz,
     MicroSeconds,
+    Cycles,
 }
 
 impl Unit {
@@ -76,6 +77,7 @@ impl fmt::Display for Unit {
             Unit::GigaBytes => write!(f, "GigaBytes"),
             Unit::MegaHertz => write!(f, "MegaHertz"),
             Unit::MicroSeconds => write!(f, "MicroSeconds"),
+            Unit::Cycles => write!(f, "Cycles"),
             Unit::Numeric => write!(f, ""),
         }
     }

@@ -36,3 +36,5 @@ packaging/*/BUILDROOT/*
 
 .vscode
 .data.json
+
+tmp

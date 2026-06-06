@@ -15,6 +15,8 @@ pub mod utils;
 #[cfg(target_os = "linux")]
 use procfs::{CpuInfo, CpuTime, KernelStats};
 use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration, vec};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::FileExt;
 #[allow(unused_imports)]
 use sysinfo::{CpuExt, Pid, System, SystemExt};
 use sysinfo::{DiskExt, DiskType};
@@ -33,6 +35,16 @@ pub trait RecordGenerator {
     fn refresh_record(&mut self);
     fn get_records_passive(&self) -> Vec<Record>;
     fn clean_old_records(&mut self);
+}
+
+pub trait MultiValuedRecordGenerator {
+    fn refresh_record(&mut self);
+    fn get_records_passive(&self) -> Vec<MultiValuedRecord>;
+    fn clean_old_records(&mut self);
+}
+
+pub trait MultiValuedRecordReader {
+    fn read_record(&self) -> Result<MultiValuedRecord, Box<dyn Error>>;
 }
 
 pub trait RecordReader {
@@ -474,7 +486,8 @@ impl Topology {
         for s in &self.sockets {
             if let Some(_) = s.get_records_diff_power_microwatts() {
                 for c in s.get_cores_passive() {
-                    info!("Core {} total idle time percentage: {}", c.id, c.get_idle_time_delta_percentage().unwrap());
+                    let res = c.get_idle_time_delta_percentage().unwrap();
+                    info!("Core {} total active time percentage: {}, average frequency: {}", c.id, res.active_percentage, res.average_frequency);
                 }
             }
         }
@@ -1365,12 +1378,12 @@ pub struct CPUCore {
     pub id: u16,
     pub attributes: HashMap<String, String>,
     /// Idle CPU time records (sum of all non-C0 cpuidle states, in microseconds)
-    pub record_buffer: Vec<Record>,
+    pub record_buffer: Vec<MultiValuedRecord>,
     /// Maximum size of record_buffer in kilobytes
     pub buffer_max_kbytes: u16,
 }
 
-impl RecordGenerator for CPUCore {
+impl MultiValuedRecordGenerator for CPUCore {
     /// Refresh and store a new cpuidle idle time record for this core.
     fn refresh_record(&mut self) {
         debug!("CPU Core: {} new record added", self.id);
@@ -1411,23 +1424,23 @@ impl RecordGenerator for CPUCore {
     }
 
     /// Return a copy of all records in the buffer.
-    fn get_records_passive(&self) -> Vec<Record> {
+    fn get_records_passive(&self) -> Vec<MultiValuedRecord> {
         let mut result = vec![];
         for r in &self.record_buffer {
-            result.push(Record::new(
+            result.push(MultiValuedRecord::new(
                 r.timestamp,
-                r.value.clone(),
-                units::Unit::MicroSeconds,
+                r.values.iter().map(|s| s.clone()).collect(),
+                r.units.clone(),
             ));
         }
         result
     }
 }
 
-impl RecordReader for CPUCore {
+impl MultiValuedRecordReader for CPUCore {
     /// Read idle CPU time (non-C0 cpuidle states sum) from sysfs for this core.
     /// Returns the total idle time in microseconds as a Record.
-    fn read_record(&self) -> Result<Record, Box<dyn Error>> {
+    fn read_record(&self) -> Result<MultiValuedRecord, Box<dyn Error>> {
         #[cfg(target_os = "linux")]
         {
             let mut total_idle_us: u64 = 0;
@@ -1460,10 +1473,24 @@ impl RecordReader for CPUCore {
                 }
             }
 
-            Ok(Record::new(
+            // Read APERF and MPERF from /dev/cpu/<id>/msr
+            const MSR_IA32_MPERF: u64 = 0xE7;
+            const MSR_IA32_APERF: u64 = 0xE8;
+
+            let read_msr = |msr: u64| -> Option<u64> {
+                let mut file = fs::File::open(format!("/dev/cpu/{}/msr", self.id)).ok()?;
+                let mut buf = [0u8; 8];
+                file.read_at(&mut buf, msr).ok()?;
+                Some(u64::from_le_bytes(buf))
+            };
+
+            let mperf = read_msr(MSR_IA32_MPERF).unwrap_or(0);
+            let aperf = read_msr(MSR_IA32_APERF).unwrap_or(0);
+
+            Ok(MultiValuedRecord::new(
                 current_system_time_since_epoch(),
-                total_idle_us.to_string(),
-                units::Unit::MicroSeconds,
+                vec![total_idle_us.to_string(), mperf.to_string(), aperf.to_string()],
+                vec![units::Unit::MicroSeconds, units::Unit::Cycles, units::Unit::Cycles],
             ))
         }
         #[cfg(not(target_os = "linux"))]
@@ -1499,24 +1526,51 @@ impl CPUCore {
 
     /// Returns the difference in idle CPU time (microseconds) between the last two records.
     /// Returns None if there are fewer than 2 records.
-    pub fn get_idle_time_delta_percentage(&self) -> Option<u64> {
+    pub fn get_idle_time_delta_percentage(&self) -> Option<CPUCoreMetrics> {
         if self.record_buffer.len() > 1 {
             let last = self.record_buffer.last().unwrap();
             let previous = self.record_buffer.get(self.record_buffer.len() - 2).unwrap();
+            let mut res = CPUCoreMetrics{
+                average_frequency: 0,
+                active_percentage: 0,
+            };
 
-            if let (Ok(last_val), Ok(prev_val)) = (
-                last.value.trim().parse::<u64>(),
-                previous.value.trim().parse::<u64>(),
-            ) {
-                let last_timestamp = last.timestamp;
-                let prev_timestamp = previous.timestamp; 
-                if last_val >= prev_val {
-                    return Some(
-                        (((last_val - prev_val) as f64 / (last_timestamp - prev_timestamp).as_micros() as f64) * 100_f64) as u64
-                    );
-
+            if last.values.len() >= 3 && previous.values.len() >= 3 {
+                let (last_idle_time, last_mperf, last_aperf) = (last.values[0].clone(), last.values[1].clone(), last.values[2].clone());
+                let (previous_idle_time, previous_mperf, previous_aperf) = (previous.values[0].clone(), previous.values[1].clone(), previous.values[2].clone());
+                if let (Ok(last_idle_time), Ok(prev_idle_time)) = (
+                    last_idle_time.trim().parse::<u64>(),
+                    previous_idle_time.trim().parse::<u64>(),
+                ) {
+                    let last_timestamp = last.timestamp;
+                    let prev_timestamp = previous.timestamp; 
+                    if last_idle_time >= prev_idle_time {
+                        res.active_percentage = (
+                            100_f64 - (((last_idle_time - prev_idle_time) as f64 / (last_timestamp - prev_timestamp).as_micros() as f64) * 100_f64)
+                        ) as u64;
+                    }
                 }
 
+                let aperf_delta = last_aperf.trim().parse::<u64>().unwrap_or(0)
+                    .saturating_sub(previous_aperf.trim().parse::<u64>().unwrap_or(0));
+                let mperf_delta = last_mperf.trim().parse::<u64>().unwrap_or(0)
+                    .saturating_sub(previous_mperf.trim().parse::<u64>().unwrap_or(0));
+
+                let max_freq_khz = fs::read_to_string(format!(
+                    "/sys/devices/system/cpu/cpu{}/cpufreq/cpuinfo_max_freq",
+                    self.id
+                ))
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+
+                res.average_frequency = if mperf_delta != 0 {
+                    (max_freq_khz as f64 * aperf_delta as f64 / mperf_delta as f64) as u64
+                } else {
+                    0
+                };
+
+                return Some(res);
             }
         }
         None
@@ -1681,6 +1735,19 @@ pub struct Record {
     pub unit: units::Unit,
 }
 
+#[derive(Debug, Clone)]
+pub struct MultiValuedRecord {
+    pub timestamp: Duration,
+    pub values: Vec<String>,
+    pub units: Vec<units::Unit>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CPUCoreMetrics {
+    average_frequency: u64,
+    active_percentage: u64,
+}
+
 impl Record {
     /// Instances Record and returns the instance
     pub fn new(timestamp: Duration, value: String, unit: units::Unit) -> Record {
@@ -1692,6 +1759,18 @@ impl Record {
     }
 }
 
+
+impl MultiValuedRecord {
+    /// Instances Record and returns the instance
+    pub fn new(timestamp: Duration, values: Vec<String>, units: Vec<units::Unit>) -> MultiValuedRecord {
+        MultiValuedRecord {
+            timestamp,
+            values,
+            units,
+        }
+    }
+}
+
 impl fmt::Display for Record {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -1699,6 +1778,19 @@ impl fmt::Display for Record {
             "recorded {} {} at {:?}",
             self.value.trim(),
             self.unit,
+            self.timestamp
+        )
+    }
+}
+
+
+impl fmt::Display for MultiValuedRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "recorded [{}] [{}] at {:?}",
+            self.values.join(", "),
+            self.units.iter().map(|u| u.to_string()).collect::<Vec<String>>().join(", "),
             self.timestamp
         )
     }
