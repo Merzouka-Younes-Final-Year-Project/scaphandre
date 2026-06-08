@@ -1,6 +1,6 @@
 use crate::sensors::units::Unit::MicroJoule;
 use crate::sensors::utils::current_system_time_since_epoch;
-use crate::sensors::{CPUSocket, Domain, MultiValuedRecord, MultiValuedRecordReader, Record, RecordReader, Sensor, Topology};
+use crate::sensors::{CPUSocket, Domain, Record, RecordReader, Sensor, Topology};
 use procfs::{modules, KernelModule};
 use regex::Regex;
 use std::collections::HashMap;
@@ -83,12 +83,12 @@ impl RecordReader for Topology {
             debug!("Suming socket PKG and DRAM metrics to get host metric");
             for s in &self.sockets {
                 if let Ok(r) = s.read_record() {
-                    match r.values[0].trim().parse::<i128>() {
+                    match r.value.trim().parse::<i128>() {
                         Ok(val) => {
                             total += val;
                         }
                         Err(e) => {
-                            warn!("could'nt convert {} to i128: {}", r.values[0].trim(), e);
+                            warn!("could'nt convert {} to i128: {}", r.value.trim(), e);
                         }
                     }
                 }
@@ -115,31 +115,14 @@ impl RecordReader for Topology {
         }
     }
 }
-impl MultiValuedRecordReader for CPUSocket {
-    fn read_record(&self) -> Result<MultiValuedRecord, Box<dyn Error>> {
-        // AI: Add logic to loop through self.cpu_cores and sum up idle time (idle + iowait) and
-        // total time following the example
-        let mut socket_busy = 0_u64;
-        let mut socket_total = 0_u64;
-        for c in self.get_cores_passive() {
-            if let Ok(r) = c.read_record() {
-                if r.values.len() >= 5 {
-                    if let Ok(core_busy) = r.values[3].parse::<u64>() {
-                        socket_busy += core_busy;
-                    }
-                    if let Ok(core_total) = r.values[4].parse::<u64>() {
-                        socket_total += core_total;
-                    }
-                }
-            }
-        }
-
+impl RecordReader for CPUSocket {
+    fn read_record(&self) -> Result<Record, Box<dyn Error>> {
         let source_file = self.sensor_data.get("source_file").unwrap();
         match fs::read_to_string(source_file) {
-            Ok(result) => Ok(MultiValuedRecord::new(
+            Ok(result) => Ok(Record::new(
                 current_system_time_since_epoch(),
-                vec![result, socket_busy.to_string(), socket_total.to_string()],
-                vec![MicroJoule, Unit::Numeric, Unit::Numeric],
+                result,
+                MicroJoule,
             )),
             Err(error) => Err(Box::new(error)),
         }

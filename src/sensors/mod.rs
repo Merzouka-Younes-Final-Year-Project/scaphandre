@@ -1049,7 +1049,7 @@ pub struct CPUSocket {
     /// Path to the file that provides the counter for energy consumed by the socket, in microjoules.
     pub counter_uj_path: String,
     /// Comsumption records measured and stored by scaphandre for this socket.
-    pub record_buffer: Vec<MultiValuedRecord>,
+    pub record_buffer: Vec<Record>,
     /// Maximum size of the record_buffer in kilobytes.
     pub buffer_max_kbytes: u16,
     /// CPU cores (core_id in /proc/cpuinfo) attached to the socket.
@@ -1061,7 +1061,7 @@ pub struct CPUSocket {
     pub sensor_data: HashMap<String, String>,
 }
 
-impl MultiValuedRecordGenerator for CPUSocket {
+impl RecordGenerator for CPUSocket {
     /// Generates a new record of the socket energy consumption and stores it in the record_buffer.
     /// Returns a clone of this Record instance.
     fn refresh_record(&mut self) {
@@ -1119,13 +1119,13 @@ impl MultiValuedRecordGenerator for CPUSocket {
 
     /// Returns a new owned Vector being a clone of the current record_buffer.
     /// This does not affect the current buffer but is costly.
-    fn get_records_passive(&self) -> Vec<MultiValuedRecord> {
+    fn get_records_passive(&self) -> Vec<Record> {
         let mut result = vec![];
         for r in &self.record_buffer {
-            result.push(MultiValuedRecord::new(
+            result.push(Record::new(
                 r.timestamp,
-                r.values.iter().cloned().collect::<Vec<String>>(),
-                r.units.iter().cloned().collect::<Vec<units::Unit>>(),
+                r.value.clone(),
+                units::Unit::MicroJoule,
             ));
         }
         result
@@ -1324,43 +1324,40 @@ impl CPUSocket {
     /// and previous measurement, for this CPU socket
     pub fn get_records_diff_power_microwatts(&self) -> Option<Record> {
         if self.record_buffer.len() > 1 {
-            if self.record_buffer[0].values.len() >= 1 {
-                let last_record = self.record_buffer.last().unwrap();
-                let previous_record = self
-                    .record_buffer
-                    .get(self.record_buffer.len() - 2)
-                    .unwrap();
-                debug!(
-                    "socket : last_record value: {} previous_record value: {}",
-                    &last_record.values[0], &previous_record.values[0]
-                );
-                let last_rec_val = last_record.values[0].trim();
-                debug!("socket : l1187 : trying to parse {} as u64", last_rec_val);
-                let prev_rec_val = previous_record.values[0].trim();
-                debug!("socket : l1189 : trying to parse {} as u64", prev_rec_val);
-                if let (Ok(last_microjoules), Ok(previous_microjoules)) =
+            let last_record = self.record_buffer.last().unwrap();
+            let previous_record = self
+                .record_buffer
+                .get(self.record_buffer.len() - 2)
+                .unwrap();
+            debug!(
+                "socket : last_record value: {} previous_record value: {}",
+                &last_record.value, &previous_record.value
+            );
+            let last_rec_val = last_record.value.trim();
+            debug!("socket : l1187 : trying to parse {} as u64", last_rec_val);
+            let prev_rec_val = previous_record.value.trim();
+            debug!("socket : l1189 : trying to parse {} as u64", prev_rec_val);
+            if let (Ok(last_microjoules), Ok(previous_microjoules)) =
                 (last_rec_val.parse::<u64>(), prev_rec_val.parse::<u64>())
-                {
-                    let mut microjoules = 0;
-                    if last_microjoules >= previous_microjoules {
-                        microjoules = last_microjoules - previous_microjoules;
-                    } else {
-                        debug!(
-                            "socket: previous_microjoules ({}) > last_microjoules ({})",
-                            previous_microjoules, last_microjoules
-                        );
-                    }
-                    let time_diff =
-                    last_record.timestamp.as_secs_f64() - previous_record.timestamp.as_secs_f64();
-                    let microwatts = microjoules as f64 / time_diff;
-                    debug!("socket : l1067: microwatts: {}", microwatts);
-                    return Some(Record::new(
-                        last_record.timestamp,
-                        (microwatts as u64).to_string(),
-                        units::Unit::MicroWatt,
-                    ));
+            {
+                let mut microjoules = 0;
+                if last_microjoules >= previous_microjoules {
+                    microjoules = last_microjoules - previous_microjoules;
+                } else {
+                    debug!(
+                        "socket: previous_microjoules ({}) > last_microjoules ({})",
+                        previous_microjoules, last_microjoules
+                    );
                 }
-
+                let time_diff =
+                    last_record.timestamp.as_secs_f64() - previous_record.timestamp.as_secs_f64();
+                let microwatts = microjoules as f64 / time_diff;
+                debug!("socket : l1067: microwatts: {}", microwatts);
+                return Some(Record::new(
+                    last_record.timestamp,
+                    (microwatts as u64).to_string(),
+                    units::Unit::MicroWatt,
+                ));
             }
         } else {
             warn!("Not enough records for socket");
