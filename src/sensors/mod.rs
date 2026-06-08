@@ -1195,7 +1195,8 @@ impl CPUSocket {
             cpu_cores: vec![], // cores are instantiated on a later step
             stat_buffer: vec![],
             sensor_data,
-            idle_percentage_threshold: 0.975_f64,
+            // idle_percentage_threshold: 0.975_f64,
+            idle_percentage_threshold: 0.85_f64,
         }
     }
 
@@ -1238,11 +1239,12 @@ impl CPUSocket {
     pub fn read_idle_record(&self) -> Option<Record> {
         if let Some(stat) = self.get_stats_diff() {
             let (idle, total) = stat.get_idle_and_total();
+            debug!("CPUSocket {} idle percentage {}", self.id, idle as f64 / total as f64);
             if (idle as f64 / total as f64) >= self.idle_percentage_threshold {
-                if let Some(Ok(conso)) = self.get_records_diff_power_microwatts().map(|r| r.value.parse::<u64>()) {
+                if let Some(Ok(conso_core)) = self.get_records_diff_power_microwatts().map(|r| r.value.parse::<u64>()) {
                     return Some(Record::new(
                         current_system_time_since_epoch(),
-                        conso.to_string(),
+                        conso_core.to_string(),
                         units::Unit::MicroWatt,
                     ));
                 }
@@ -1252,18 +1254,21 @@ impl CPUSocket {
     }
 
     pub fn get_idle_power(&self) -> Option<Record> {
-        debug!("Idle power records: {}", self.idle_record_buffer.len());
         if !self.idle_record_buffer.is_empty() {
             let consumptions = self.idle_record_buffer
                 .iter()
                 .flat_map(|r| r.value.parse::<u64>())
                 .collect::<Vec<u64>>();
 
-            return Some(Record::new(
-                current_system_time_since_epoch(),
-                ((consumptions.iter().sum::<u64>() as f64 / consumptions.len() as f64) as u64).to_string(),
-                units::Unit::MicroWatt,
-            ));
+            if let Some(min_conso) = consumptions.iter().min() {
+                debug!("IDLE Consumption {min_conso}");
+                return Some(Record::new(
+                    current_system_time_since_epoch(),
+                    // ((consumptions.iter().sum::<u64>() as f64 / consumptions.len() as f64) as u64).to_string(),
+                    min_conso.to_string(),
+                    units::Unit::MicroWatt,
+                ));
+            }
         }
         None
     }
@@ -1493,7 +1498,6 @@ pub struct CPUCore {
 impl MultiValuedRecordGenerator for CPUCore {
     /// Refresh and store a new cpuidle idle time record for this core.
     fn refresh_record(&mut self) {
-        debug!("CPU Core: {} new record added", self.id);
         match self.read_record() {
             Ok(record) => {
                 self.record_buffer.push(record);
@@ -1551,11 +1555,8 @@ impl MultiValuedRecordReader for CPUCore {
         #[cfg(target_os = "linux")]
         {
             let mut total_idle_us: u64 = 0;
-            let mut total_time_us: u64 = 0;
             let base_path = format!("/sys/devices/system/cpu/cpu{}/cpuidle", self.id);
 
-            // Read all cpuidle states except C0 (which is typically state0 and represents active time)
-            // We iterate through state directories and sum their time values
             if let Ok(entries) = fs::read_dir(&base_path) {
                 for entry in entries.flatten() {
                     let state_path = entry.path();
@@ -1565,15 +1566,13 @@ impl MultiValuedRecordReader for CPUCore {
                             .and_then(|n| n.to_str());
 
                         if let Some(name) = state_name {
+                            // Skip state0 (C0, active state)
+                            if name == "state0" {
+                                continue;
+                            }
                             let time_file = state_path.join("time");
                             if let Ok(time_str) = fs::read_to_string(time_file) {
                                 if let Ok(time_us) = time_str.trim().parse::<u64>() {
-                                    total_time_us += time_us;
-                                    // Skip state0 (C0, active state)
-                                    debug!("Core {}: State {}, time {}", self.id, name, time_us);
-                                    if name == "state0" {
-                                        continue;
-                                    }
                                     total_idle_us += time_us;
                                 }
                             }
@@ -1628,7 +1627,6 @@ impl MultiValuedRecordReader for CPUCore {
                     core_total.to_string(),
                     node_busy.to_string(),
                     node_total.to_string(),
-                    total_time_us.to_string(),
                 ],
                 vec![
                     units::Unit::MicroSeconds,
@@ -1638,7 +1636,6 @@ impl MultiValuedRecordReader for CPUCore {
                     units::Unit::Numeric,
                     units::Unit::Numeric,
                     units::Unit::Numeric,
-                    units::Unit::MicroSeconds,
                 ],
             ))
         }
@@ -1686,31 +1683,21 @@ impl CPUCore {
             };
 
             if last.values.len() >= 7 && previous.values.len() >= 7 {
-                let (last_idle_time, last_mperf, last_aperf, last_total_time) = (last.values[0].clone(), last.values[1].clone(), last.values[2].clone(), last.values[7].clone());
-                let (previous_idle_time, previous_mperf, previous_aperf, previous_total_time) = (previous.values[0].clone(), previous.values[1].clone(), previous.values[2].clone(), previous.values[7].clone());
-                if let (Ok(last_idle_time), Ok(last_total_time), Ok(prev_idle_time), Ok(previous_total_time)) = (
-                    last_idle_time.trim().parse::<u64>(),
-                    last_total_time.trim().parse::<u64>(),
-                    previous_idle_time.trim().parse::<u64>(),
-                    previous_total_time.trim().parse::<u64>(),
-                ) {
-                    if last_idle_time >= prev_idle_time {
-                        debug!("Core {}: Idle Time {}, Time delta {}, Idle Percentage {}",
-                            self.id,
-                            last_idle_time - prev_idle_time,
-                            (last_total_time - previous_total_time),
-                            ((last_idle_time - prev_idle_time) as f64 / (last_total_time - previous_total_time) as f64) * 100_f64
-                        );
-                        res.active_percentage = (
-                            100_f64 - (((last_idle_time - prev_idle_time) as f64 / (last_total_time - previous_total_time) as f64) * 100_f64)
-                        ) as u64;
-                    }
-                }
+                let core_busy_delta = last.values[3].trim().parse::<u64>().unwrap_or(0)
+                    .saturating_sub(previous.values[3].trim().parse::<u64>().unwrap_or(0));
+                let core_total_delta = last.values[4].trim().parse::<u64>().unwrap_or(0)
+                    .saturating_sub(previous.values[4].trim().parse::<u64>().unwrap_or(0));
 
-                let aperf_delta = last_aperf.trim().parse::<u64>().unwrap_or(0)
-                    .saturating_sub(previous_aperf.trim().parse::<u64>().unwrap_or(0));
-                let mperf_delta = last_mperf.trim().parse::<u64>().unwrap_or(0)
-                    .saturating_sub(previous_mperf.trim().parse::<u64>().unwrap_or(0));
+                res.active_percentage = if core_total_delta != 0 {
+                    (core_busy_delta as f64 / core_total_delta as f64 * 100.0) as u64
+                } else {
+                    0
+                };
+
+                let aperf_delta = last.values[2].trim().parse::<u64>().unwrap_or(0)
+                    .saturating_sub(previous.values[2].trim().parse::<u64>().unwrap_or(0));
+                let mperf_delta = last.values[1].trim().parse::<u64>().unwrap_or(0)
+                    .saturating_sub(previous.values[1].trim().parse::<u64>().unwrap_or(0));
 
                 let max_freq_khz = fs::read_to_string(format!(
                     "/sys/devices/system/cpu/cpu{}/cpufreq/cpuinfo_max_freq",
@@ -1726,14 +1713,10 @@ impl CPUCore {
                     0
                 };
 
-
-                // To switch between busy and total: change index 5->6 (node_busy->node_total)
-                // and index 3->4 (core_busy->core_total)
                 let core_busy_delta = last.values[3].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[3].trim().parse::<u64>().unwrap_or(0));
                 let node_busy_delta = last.values[5].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[5].trim().parse::<u64>().unwrap_or(0));
-                debug!("Core {} node_busy_delta: {}", self.id, node_busy_delta);
                 res.cpu_time_percentage = if node_busy_delta != 0 {
                     core_busy_delta as f64 / node_busy_delta as f64 * 100.0
                 } else {

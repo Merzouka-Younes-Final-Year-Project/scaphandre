@@ -82,6 +82,7 @@ impl RecordReader for Topology {
                 idle_conso += conso;
             }
         }
+
         debug!("Total idle power: {idle_conso}");
 
         if let Some(mut psys_record) = self.get_rapl_psys_energy_microjoules() {

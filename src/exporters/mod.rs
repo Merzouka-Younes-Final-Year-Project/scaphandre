@@ -680,6 +680,7 @@ impl MetricGenerator {
 
                 if let Some(power) = socket.get_idle_power() {
                     let socket_power_microwatts = &power.value;
+                    info!("Exporter IDLE added");
 
                     self.data.push(Metric {
                         name: String::from("scaph_socket_idle_power_microwatts"),
