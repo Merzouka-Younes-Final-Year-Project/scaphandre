@@ -5,6 +5,7 @@ use procfs::{modules, KernelModule};
 use regex::Regex;
 use std::collections::HashMap;
 use std::error::Error;
+use std::process::id;
 use std::{env, fs};
 
 use super::units::Unit;
@@ -74,9 +75,20 @@ impl RecordReader for Topology {
     fn read_record(&self) -> Result<Record, Box<dyn Error>> {
         // if psys is available, return psys
         // else return pkg + dram + F(disks)
+        //
+        let mut idle_conso = 0_u64;
+        for s in &self.sockets {
+            if let Some(Ok(conso)) = s.get_idle_power().map(|r| r.value.parse::<u64>()) {
+                idle_conso += conso;
+            }
+        }
+        debug!("Total idle power: {idle_conso}");
 
-        if let Some(psys_record) = self.get_rapl_psys_energy_microjoules() {
+        if let Some(mut psys_record) = self.get_rapl_psys_energy_microjoules() {
             debug!("Using PSYS metric");
+            if let Ok(conso) = psys_record.value.parse::<u64>() {
+                psys_record.value = (conso - idle_conso).to_string();
+            }
             Ok(psys_record)
         } else {
             let mut total: i128 = 0;
@@ -109,7 +121,7 @@ impl RecordReader for Topology {
             }
             Ok(Record::new(
                 current_system_time_since_epoch(),
-                total.to_string(),
+                (total as u128 - idle_conso as u128).to_string(),
                 Unit::MicroJoule,
             ))
         }
@@ -128,6 +140,8 @@ impl RecordReader for CPUSocket {
         }
     }
 }
+
+
 impl RecordReader for Domain {
     fn read_record(&self) -> Result<Record, Box<dyn Error>> {
         let source_file = self.sensor_data.get("source_file").unwrap();

@@ -488,10 +488,11 @@ impl MetricGenerator {
                     state: String::from("ok"),
                     tags: vec!["scaphandre".to_string()],
                     attributes,
-                    description: String::from("Power measurement on the whole host, in microwatts"),
+                    description: String::from("Active power measurement on the whole host, in microwatts"),
                     metric_value: MetricValueType::Text(power.value),
                 });
             }
+
         }
         if let Some(metric_value) = self.topology.get_load_avg() {
             self.data.push(Metric {
@@ -670,7 +671,27 @@ impl MetricGenerator {
                         tags: vec!["scaphandre".to_string()],
                         attributes: attributes.clone(),
                         description: String::from(
-                            "Power measurement relative to a CPU socket, in microwatts",
+                            "Active power measurement relative to a CPU socket, in microwatts",
+                        ),
+                        metric_value: MetricValueType::Text(socket_power_microwatts.clone()),
+                    });
+                }
+
+
+                if let Some(power) = socket.get_idle_power() {
+                    let socket_power_microwatts = &power.value;
+
+                    self.data.push(Metric {
+                        name: String::from("scaph_socket_idle_power_microwatts"),
+                        metric_type: String::from("gauge"),
+                        ttl: 60.0,
+                        timestamp: power.timestamp,
+                        hostname: self.hostname.clone(),
+                        state: String::from("ok"),
+                        tags: vec!["scaphandre".to_string()],
+                        attributes: attributes.clone(),
+                        description: String::from(
+                            "Idle power measurement relative to a CPU socket, in microwatts",
                         ),
                         metric_value: MetricValueType::Text(socket_power_microwatts.clone()),
                     });

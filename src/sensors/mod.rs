@@ -484,7 +484,7 @@ impl Topology {
     // and c-states
     pub fn get_records_diff_power_microwatts_per_core(&self) -> Option<Vec<(CPUCore, Record)>> {
         for s in &self.sockets {
-            if let Some(_) = s.get_records_diff_power_microwatts() {
+            if s.get_records_diff_power_microwatts().is_some() {
                 for c in s.get_cores_passive() {
                     let res = c.get_core_metrics_delta().unwrap();
                     info!("Core {} total active time percentage: {}, average frequency: {}, cpu time percentage: {}", c.id, res.active_percentage, res.average_frequency, res.cpu_time_percentage);
@@ -1052,10 +1052,17 @@ pub struct CPUSocket {
     pub record_buffer: Vec<Record>,
     /// Maximum size of the record_buffer in kilobytes.
     pub buffer_max_kbytes: u16,
+
+    /// Idle comsumption records measured and stored by scaphandre for this socket.
+    pub idle_record_buffer: Vec<Record>,
+
     /// CPU cores (core_id in /proc/cpuinfo) attached to the socket.
     pub cpu_cores: Vec<CPUCore>,
     /// Usage statistics records stored for this socket.
     pub stat_buffer: Vec<CPUStat>,
+
+    /// Idle threshold for measurement of idle energy
+    pub idle_percentage_threshold: f64,
     ///
     #[allow(dead_code)]
     pub sensor_data: HashMap<String, String>,
@@ -1078,6 +1085,10 @@ impl RecordGenerator for CPUSocket {
                     e
                 );
             }
+        }
+
+        if let Some(record) = self.read_idle_record() {
+                self.idle_record_buffer.push(record);
         }
 
         if !self.record_buffer.is_empty() {
@@ -1111,6 +1122,37 @@ impl RecordGenerator for CPUSocket {
                             "Cleaning socket id {} records buffer, removing: {}",
                             self.id, res
                         );
+                    }
+                }
+            }
+        }
+
+        if !self.idle_record_buffer.is_empty() {
+            let idle_record_ptr = &self.idle_record_buffer[0];
+            let idle_curr_size = size_of_val(idle_record_ptr) * self.idle_record_buffer.len();
+            trace!(
+                "socket idle record buffer current size: {} max_bytes: {}",
+                idle_curr_size,
+                self.buffer_max_kbytes * 1000
+            );
+            if idle_curr_size > (self.buffer_max_kbytes * 1000) as usize {
+                let size_diff = idle_curr_size - (self.buffer_max_kbytes * 1000) as usize;
+                trace!(
+                    "socket idle record size_diff: {} sizeof: {}",
+                    size_diff,
+                    size_of_val(idle_record_ptr)
+                );
+                if size_diff > size_of_val(idle_record_ptr) {
+                    let nb_records_to_delete =
+                        size_diff as f32 / size_of_val(idle_record_ptr) as f32;
+                    for _ in 1..nb_records_to_delete as u32 {
+                        if !self.idle_record_buffer.is_empty() {
+                            let res = self.idle_record_buffer.remove(0);
+                            debug!(
+                                "Cleaning socket id {} idle records buffer, removing: {}",
+                                self.id, res
+                            );
+                        }
                     }
                 }
             }
@@ -1149,9 +1191,11 @@ impl CPUSocket {
             counter_uj_path,
             record_buffer: vec![], // buffer has to be empty first
             buffer_max_kbytes,
+            idle_record_buffer: vec![],
             cpu_cores: vec![], // cores are instantiated on a later step
             stat_buffer: vec![],
             sensor_data,
+            idle_percentage_threshold: 0.975_f64,
         }
     }
 
@@ -1190,6 +1234,53 @@ impl CPUSocket {
     pub fn add_cpu_core(&mut self, core: CPUCore) {
         self.cpu_cores.push(core);
     }
+
+    pub fn read_idle_record(&self) -> Option<Record> {
+        if let Some(stat) = self.get_stats_diff() {
+            let (idle, total) = stat.get_idle_and_total();
+            if (idle as f64 / total as f64) >= self.idle_percentage_threshold {
+                if let Some(Ok(conso)) = self.get_records_diff_power_microwatts().map(|r| r.value.parse::<u64>()) {
+                    return Some(Record::new(
+                        current_system_time_since_epoch(),
+                        conso.to_string(),
+                        units::Unit::MicroWatt,
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_idle_power(&self) -> Option<Record> {
+        debug!("Idle power records: {}", self.idle_record_buffer.len());
+        if !self.idle_record_buffer.is_empty() {
+            let consumptions = self.idle_record_buffer
+                .iter()
+                .flat_map(|r| r.value.parse::<u64>())
+                .collect::<Vec<u64>>();
+
+            return Some(Record::new(
+                current_system_time_since_epoch(),
+                ((consumptions.iter().sum::<u64>() as f64 / consumptions.len() as f64) as u64).to_string(),
+                units::Unit::MicroWatt,
+            ));
+        }
+        None
+    }
+
+    /// Returns a new owned Vector being a clone of the current idle_record_buffer.
+    /// This does not affect the current buffer but is costly.
+    // fn get_idle_records_passive(&self) -> Vec<Record> {
+    //     let mut result = vec![];
+    //     for r in &self.idle_record_buffer {
+    //         result.push(Record::new(
+    //             r.timestamp,
+    //             r.value.clone(),
+    //             units::Unit::MicroJoule,
+    //         ));
+    //     }
+    //     result
+    // }
 
     /// Generates a new CPUStat object storing current usage statistics of the socket
     /// and stores it in the stat_buffer.
@@ -1276,7 +1367,7 @@ impl CPUSocket {
     /// Computes the difference between previous usage statistics record for the socket
     /// and the current one. Returns a CPUStat object containing this difference, field
     /// by field.
-    pub fn get_stats_diff(&mut self) -> Option<CPUStat> {
+    pub fn get_stats_diff(&self) -> Option<CPUStat> {
         if self.stat_buffer.len() > 1 {
             let last = &self.stat_buffer[0];
             let previous = &self.stat_buffer[1];
@@ -1916,6 +2007,23 @@ impl CPUStat {
             user, nice, system, idle, irq, softirq, iowait, steal, guest_nice, guest
         );
         user + nice + system + guest_nice + guest
+    }
+
+    fn get_idle_and_total(&self) -> (u64, u64) {
+        let idle = self.idle + self.iowait.unwrap_or(0);
+
+        let total = self.user
+            + self.nice
+            + self.system
+            + self.idle
+            + self.iowait.unwrap_or(0)
+            + self.irq.unwrap_or(0)
+            + self.softirq.unwrap_or(0)
+            + self.steal.unwrap_or(0)
+            + self.guest.unwrap_or(0)
+            + self.guest_nice.unwrap_or(0);
+
+        (idle, total)
     }
 }
 

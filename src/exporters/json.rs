@@ -472,7 +472,7 @@ impl JsonExporter {
                 }) {
                     let socket_power = format!("{}", metric.metric_value).parse::<f32>().unwrap();
 
-                    let domains = metrics
+                    let mut domains = metrics
                         .iter()
                         .filter(|x| {
                             x.name == "scaph_domain_power_microwatts"
@@ -489,6 +489,24 @@ impl JsonExporter {
                             timestamp: d.timestamp.as_secs_f64(),
                         })
                         .collect::<Vec<_>>();
+
+                    if let Some(idle_metric) = metrics.iter().find(|x| {
+                        x.name == "scaph_socket_idle_power_microwatts"
+                            && x.attributes
+                                .get("socket_id")
+                                .unwrap()
+                                .parse::<u16>()
+                                .unwrap()
+                                == socket.id
+                    }) {
+                        domains.push(Domain {
+                            name: String::from("idle"),
+                            consumption: format!("{}", idle_metric.metric_value)
+                                .parse::<f32>()
+                                .unwrap(),
+                            timestamp: idle_metric.timestamp.as_secs_f64(),
+                        });
+                    }
 
                     Some(Socket {
                         id: socket.id,
