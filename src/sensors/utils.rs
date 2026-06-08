@@ -71,6 +71,8 @@ pub struct IProcess {
     pub owner: u32,
     pub comm: String,
     pub cmdline: Vec<String>,
+    pub cpu_busy_time: u64,
+    pub node_busy_time: u64,
     //CPU (all of them) time usage, as a percentage
     pub cpu_usage_percentage: f32,
     // Virtual memory used by the process (at the time the struct is created), in bytes
@@ -98,19 +100,30 @@ impl IProcess {
         {
             let mut stime = 0;
             let mut utime = 0;
+            let mut cpu_busy_time = 0u64;
+            let mut node_busy_time = 0u64;
             if let Ok(procfs_process) =
                 procfs::process::Process::new(process.pid().to_string().parse::<i32>().unwrap())
             {
                 if let Ok(stat) = procfs_process.stat() {
                     stime += stat.stime;
                     utime += stat.utime;
+                    cpu_busy_time = stat.utime + stat.stime;
                 }
+            }
+            if let Ok(ks) = procfs::KernelStats::new() {
+                let t = &ks.total;
+                node_busy_time = t.user + t.nice + t.system + t.irq.unwrap_or(0)
+                    + t.softirq.unwrap_or(0) + t.steal.unwrap_or(0)
+                    + t.guest.unwrap_or(0) + t.guest_nice.unwrap_or(0);
             }
             IProcess {
                 pid: process.pid(),
                 owner: 0,
                 comm: String::from(process.exe().to_str().unwrap()),
                 cmdline: process.cmd().to_vec(),
+                cpu_busy_time,
+                node_busy_time,
                 cpu_usage_percentage: process.cpu_usage(),
                 memory: process.memory(),
                 virtual_memory: process.virtual_memory(),
@@ -129,6 +142,8 @@ impl IProcess {
                 owner: 0,
                 comm: String::from(process.exe().to_str().unwrap()),
                 cmdline: process.cmd().to_vec(),
+                cpu_busy_time: 0,
+                node_busy_time: 0,
                 cpu_usage_percentage: process.cpu_usage(),
                 memory: process.memory(),
                 virtual_memory: process.virtual_memory(),
@@ -337,6 +352,17 @@ impl ProcessTracker {
         }
 
         Ok(String::from("Successfully added record to process."))
+    
+    }
+
+    pub fn get_process_cpu_time_delta_percentage(&self, pid: Pid) -> Option<f64> {
+        let records = self.find_records(pid)?;
+        let last = records.get(0)?;
+        let prev = records.get(1)?;
+        let cpu_delta = last.process.cpu_busy_time.saturating_sub(prev.process.cpu_busy_time);
+        let node_delta = last.process.node_busy_time.saturating_sub(prev.process.node_busy_time);
+        if node_delta == 0 { return None; }
+        Some(cpu_delta as f64 / node_delta as f64 * 100.0)
     }
 
     pub fn get_process_last_record(&self, pid: Pid) -> Option<&ProcessRecord> {
