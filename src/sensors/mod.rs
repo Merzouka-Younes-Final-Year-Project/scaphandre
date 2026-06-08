@@ -1551,6 +1551,7 @@ impl MultiValuedRecordReader for CPUCore {
         #[cfg(target_os = "linux")]
         {
             let mut total_idle_us: u64 = 0;
+            let mut total_time_us: u64 = 0;
             let base_path = format!("/sys/devices/system/cpu/cpu{}/cpuidle", self.id);
 
             // Read all cpuidle states except C0 (which is typically state0 and represents active time)
@@ -1564,14 +1565,15 @@ impl MultiValuedRecordReader for CPUCore {
                             .and_then(|n| n.to_str());
 
                         if let Some(name) = state_name {
-                            // Skip state0 (C0, active state)
-                            if name == "state0" {
-                                continue;
-                            }
-
                             let time_file = state_path.join("time");
                             if let Ok(time_str) = fs::read_to_string(time_file) {
                                 if let Ok(time_us) = time_str.trim().parse::<u64>() {
+                                    total_time_us += time_us;
+                                    // Skip state0 (C0, active state)
+                                    debug!("Core {}: State {}, time {}", self.id, name, time_us);
+                                    if name == "state0" {
+                                        continue;
+                                    }
                                     total_idle_us += time_us;
                                 }
                             }
@@ -1626,6 +1628,7 @@ impl MultiValuedRecordReader for CPUCore {
                     core_total.to_string(),
                     node_busy.to_string(),
                     node_total.to_string(),
+                    total_time_us.to_string(),
                 ],
                 vec![
                     units::Unit::MicroSeconds,
@@ -1635,6 +1638,7 @@ impl MultiValuedRecordReader for CPUCore {
                     units::Unit::Numeric,
                     units::Unit::Numeric,
                     units::Unit::Numeric,
+                    units::Unit::MicroSeconds,
                 ],
             ))
         }
@@ -1682,17 +1686,23 @@ impl CPUCore {
             };
 
             if last.values.len() >= 7 && previous.values.len() >= 7 {
-                let (last_idle_time, last_mperf, last_aperf) = (last.values[0].clone(), last.values[1].clone(), last.values[2].clone());
-                let (previous_idle_time, previous_mperf, previous_aperf) = (previous.values[0].clone(), previous.values[1].clone(), previous.values[2].clone());
-                if let (Ok(last_idle_time), Ok(prev_idle_time)) = (
+                let (last_idle_time, last_mperf, last_aperf, last_total_time) = (last.values[0].clone(), last.values[1].clone(), last.values[2].clone(), last.values[7].clone());
+                let (previous_idle_time, previous_mperf, previous_aperf, previous_total_time) = (previous.values[0].clone(), previous.values[1].clone(), previous.values[2].clone(), previous.values[7].clone());
+                if let (Ok(last_idle_time), Ok(last_total_time), Ok(prev_idle_time), Ok(previous_total_time)) = (
                     last_idle_time.trim().parse::<u64>(),
+                    last_total_time.trim().parse::<u64>(),
                     previous_idle_time.trim().parse::<u64>(),
+                    previous_total_time.trim().parse::<u64>(),
                 ) {
-                    let last_timestamp = last.timestamp;
-                    let prev_timestamp = previous.timestamp; 
                     if last_idle_time >= prev_idle_time {
+                        debug!("Core {}: Idle Time {}, Time delta {}, Idle Percentage {}",
+                            self.id,
+                            last_idle_time - prev_idle_time,
+                            (last_total_time - previous_total_time),
+                            ((last_idle_time - prev_idle_time) as f64 / (last_total_time - previous_total_time) as f64) * 100_f64
+                        );
                         res.active_percentage = (
-                            100_f64 - (((last_idle_time - prev_idle_time) as f64 / (last_timestamp - prev_timestamp).as_micros() as f64) * 100_f64)
+                            100_f64 - (((last_idle_time - prev_idle_time) as f64 / (last_total_time - previous_total_time) as f64) * 100_f64)
                         ) as u64;
                     }
                 }
