@@ -486,8 +486,8 @@ impl Topology {
         for s in &self.sockets {
             if let Some(_) = s.get_records_diff_power_microwatts() {
                 for c in s.get_cores_passive() {
-                    let res = c.get_core_metrics_delta().unwrap();
-                    info!("Core {} total active time percentage: {}, average frequency: {}, cpu time percentage: {}", c.id, res.active_percentage, res.average_frequency, res.cpu_time_percentage);
+                    let res = c.get_idle_time_delta_percentage().unwrap();
+                    info!("Core {} total active time percentage: {}, average frequency: {}", c.id, res.active_percentage, res.average_frequency);
                 }
             }
         }
@@ -765,6 +765,8 @@ impl Topology {
     }
 
     pub fn get_process_power_consumption_microwatts(&self, pid: Pid) -> Option<Record> {
+        debug!("Hello Loser");
+        info!("Hello Loser");
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
             self.get_records_diff_power_microwatts_per_core();
             let process_cpu_percentage = self.get_process_cpu_usage_percentage(pid).unwrap();
@@ -790,118 +792,100 @@ impl Topology {
     pub fn get_all_per_process(&self, pid: Pid) -> Option<HashMap<String, (String, Record)>> {
         let mut res = HashMap::new();
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
-            if let Some(process_cpu_percentage) = self.get_proc_tracker().get_process_cpu_time_delta_percentage(pid) {
-                res.insert(
-                    String::from("scaph_process_cpu_usage_percentage"),
-                    (String::from("CPU time consumed by the process, as a percentage of the capacity of all the CPU Cores"),
-                        Record::new(
-                            record.timestamp,
-                            process_cpu_percentage.to_string(),
-                            units::Unit::Percentage,
-                        )
+            let process_cpu_percentage =
+                record.process.cpu_usage_percentage / self.proc_tracker.nb_cores as f32;
+            res.insert(
+                String::from("scaph_process_cpu_usage_percentage"),
+                (String::from("CPU time consumed by the process, as a percentage of the capacity of all the CPU Cores"),
+                Record::new(
+                    record.timestamp,
+                    process_cpu_percentage.to_string(),
+                    units::Unit::Percentage,
                     )
-                );
-                res.insert(
-                    String::from("scaph_process_memory_virtual_bytes"),
-                    (
-                        String::from("Virtual RAM usage by the process, in bytes"),
-                        Record::new(
-                            record.timestamp,
-                            record.process.virtual_memory.to_string(),
-                            units::Unit::Percentage,
-                        ),
+                )
+            );
+            res.insert(
+                String::from("scaph_process_memory_virtual_bytes"),
+                (
+                    String::from("Virtual RAM usage by the process, in bytes"),
+                    Record::new(
+                        record.timestamp,
+                        record.process.virtual_memory.to_string(),
+                        units::Unit::Percentage,
                     ),
-                );
-                res.insert(
-                    String::from("scaph_process_memory_bytes"),
-                    (
-                        String::from("Physical RAM usage by the process, in bytes"),
-                        Record::new(
-                            record.timestamp,
-                            record.process.memory.to_string(),
-                            units::Unit::Bytes,
-                        ),
+                ),
+            );
+            res.insert(
+                String::from("scaph_process_memory_bytes"),
+                (
+                    String::from("Physical RAM usage by the process, in bytes"),
+                    Record::new(
+                        record.timestamp,
+                        record.process.memory.to_string(),
+                        units::Unit::Bytes,
                     ),
-                );
-                res.insert(
-                    String::from("scaph_process_disk_write_bytes"),
-                    (
-                        String::from("Data written on disk by the process, in bytes"),
-                        Record::new(
-                            record.timestamp,
-                            record.process.disk_written.to_string(),
-                            units::Unit::Bytes,
-                        ),
+                ),
+            );
+            res.insert(
+                String::from("scaph_process_disk_write_bytes"),
+                (
+                    String::from("Data written on disk by the process, in bytes"),
+                    Record::new(
+                        record.timestamp,
+                        record.process.disk_written.to_string(),
+                        units::Unit::Bytes,
                     ),
-                );
-                res.insert(
-                    String::from("scaph_process_disk_read_bytes"),
-                    (
-                        String::from("Data read on disk by the process, in bytes"),
-                        Record::new(
-                            record.timestamp,
-                            record.process.disk_read.to_string(),
-                            units::Unit::Bytes,
-                        ),
+                ),
+            );
+            res.insert(
+                String::from("scaph_process_disk_read_bytes"),
+                (
+                    String::from("Data read on disk by the process, in bytes"),
+                    Record::new(
+                        record.timestamp,
+                        record.process.disk_read.to_string(),
+                        units::Unit::Bytes,
                     ),
-                );
-                res.insert(
-                    String::from("scaph_process_disk_total_write_bytes"),
-                    (
-                        String::from("Total data written on disk by the process, in bytes"),
-                        Record::new(
-                            record.timestamp,
-                            record.process.total_disk_written.to_string(),
-                            units::Unit::Bytes,
-                        ),
+                ),
+            );
+            res.insert(
+                String::from("scaph_process_disk_total_write_bytes"),
+                (
+                    String::from("Total data written on disk by the process, in bytes"),
+                    Record::new(
+                        record.timestamp,
+                        record.process.total_disk_written.to_string(),
+                        units::Unit::Bytes,
                     ),
-                );
+                ),
+            );
+            res.insert(
+                String::from("scaph_process_disk_total_read_bytes"),
+                (
+                    String::from("Total data read on disk by the process, in bytes"),
+                    Record::new(
+                        record.timestamp,
+                        record.process.total_disk_read.to_string(),
+                        units::Unit::Bytes,
+                    ),
+                ),
+            );
+            self.get_records_diff_power_microwatts_per_core();
+            // NOTE: This should be a per core usage percentage
+            // NOTE: This should return a per core diff power microwatts
+            let topo_conso = self.get_records_diff_power_microwatts();
+            if let Some(conso) = &topo_conso {
+                let conso_f64 = conso.value.parse::<f64>().unwrap();
+                // NOTE: change this to sum per core process energy (process core percentage *
+                // core_energy / 100)
+                let result = (conso_f64 * process_cpu_percentage as f64) / 100.0_f64;
                 res.insert(
-                    String::from("scaph_process_disk_total_read_bytes"),
+                    String::from("scaph_process_power_consumption_microwatts"),
                     (
                         String::from("Total data read on disk by the process, in bytes"),
-                        Record::new(
-                            record.timestamp,
-                            record.process.total_disk_read.to_string(),
-                            units::Unit::Bytes,
-                        ),
+                        Record::new(record.timestamp, result.to_string(), units::Unit::MicroWatt),
                     ),
                 );
-                self.get_records_diff_power_microwatts_per_core();
-                // NOTE: This should be a per core usage percentage
-                // NOTE: This should return a per core diff power microwatts
-                let topo_conso = self.get_records_diff_power_microwatts();
-                if let Some(conso) = &topo_conso {
-                    let conso_f64 = conso.value.parse::<f64>().unwrap();
-                    let mut total_cores_coef = 0.0_f64;
-                    for s in &self.sockets {
-                        for c in s.get_cores_passive() {
-                            if let Some(core) = c.get_core_metrics_delta() {
-                                total_cores_coef += core.active_percentage as f64 * core.average_frequency as f64;
-                            }
-                        }
-                    }
-                    let mut result = 0.0_f64;
-                    for s in &self.sockets {
-                        for c in s.get_cores_passive() {
-                            if let Some(core) = c.get_core_metrics_delta() {
-                                let core_conso = (
-                                (core.active_percentage as f64 * core.average_frequency as f64) /
-                                total_cores_coef) * conso_f64;
-                                let process_busy_core_percentage = 
-                                (process_cpu_percentage / 100.0_f64) * (core.cpu_time_percentage / 100.0_f64);
-                                result += core_conso * process_busy_core_percentage;
-                            }
-                        }
-                    }
-                    res.insert(
-                        String::from("scaph_process_power_consumption_microwatts"),
-                        (
-                            String::from("Total data read on disk by the process, in bytes"),
-                            Record::new(record.timestamp, result.to_string(), units::Unit::MicroWatt),
-                        ),
-                    );
-                }
             }
         }
         Some(res)
@@ -1448,7 +1432,7 @@ impl MultiValuedRecordGenerator for CPUCore {
         for r in &self.record_buffer {
             result.push(MultiValuedRecord::new(
                 r.timestamp,
-                r.values.to_vec(),
+                r.values.iter().map(|s| s.clone()).collect(),
                 r.units.clone(),
             ));
         }
@@ -1497,7 +1481,7 @@ impl MultiValuedRecordReader for CPUCore {
             const MSR_IA32_APERF: u64 = 0xE8;
 
             let read_msr = |msr: u64| -> Option<u64> {
-                let file = fs::File::open(format!("/dev/cpu/{}/msr", self.id)).ok()?;
+                let mut file = fs::File::open(format!("/dev/cpu/{}/msr", self.id)).ok()?;
                 let mut buf = [0u8; 8];
                 file.read_at(&mut buf, msr).ok()?;
                 Some(u64::from_le_bytes(buf))
@@ -1506,48 +1490,10 @@ impl MultiValuedRecordReader for CPUCore {
             let mperf = read_msr(MSR_IA32_MPERF).unwrap_or(0);
             let aperf = read_msr(MSR_IA32_APERF).unwrap_or(0);
 
-            // Logic to retrieve core cpu time
-            let (core_busy, core_total, node_busy, node_total) =
-                KernelStats::new()
-                    .ok()
-                    .and_then(|mut ks| {
-                        let nt = &ks.total;
-                        let n_total = nt.user + nt.nice + nt.system + nt.idle
-                            + nt.iowait.unwrap_or(0) + nt.irq.unwrap_or(0)
-                            + nt.softirq.unwrap_or(0) + nt.steal.unwrap_or(0)
-                            + nt.guest.unwrap_or(0) + nt.guest_nice.unwrap_or(0);
-                        let n_busy = n_total - nt.idle - nt.iowait.unwrap_or(0);
-                        ks.cpu_time.get(self.id as usize).map(|ct| {
-                            let total = ct.user + ct.nice + ct.system + ct.idle
-                                + ct.iowait.unwrap_or(0) + ct.irq.unwrap_or(0)
-                                + ct.softirq.unwrap_or(0) + ct.steal.unwrap_or(0)
-                                + ct.guest.unwrap_or(0) + ct.guest_nice.unwrap_or(0);
-                            let busy = total - ct.idle - ct.iowait.unwrap_or(0);
-                            (busy, total, n_busy, n_total)
-                        })
-                    })
-                    .unwrap_or((0, 0, 0, 0));
-
             Ok(MultiValuedRecord::new(
                 current_system_time_since_epoch(),
-                vec![
-                    total_idle_us.to_string(),
-                    mperf.to_string(),
-                    aperf.to_string(),
-                    core_busy.to_string(),
-                    core_total.to_string(),
-                    node_busy.to_string(),
-                    node_total.to_string(),
-                ],
-                vec![
-                    units::Unit::MicroSeconds,
-                    units::Unit::Cycles,
-                    units::Unit::Cycles,
-                    units::Unit::Numeric,
-                    units::Unit::Numeric,
-                    units::Unit::Numeric,
-                    units::Unit::Numeric,
-                ],
+                vec![total_idle_us.to_string(), mperf.to_string(), aperf.to_string()],
+                vec![units::Unit::MicroSeconds, units::Unit::Cycles, units::Unit::Cycles],
             ))
         }
         #[cfg(not(target_os = "linux"))]
@@ -1583,17 +1529,16 @@ impl CPUCore {
 
     /// Returns the difference in idle CPU time (microseconds) between the last two records.
     /// Returns None if there are fewer than 2 records.
-    pub fn get_core_metrics_delta(&self) -> Option<CPUCoreMetrics> {
+    pub fn get_idle_time_delta_percentage(&self) -> Option<CPUCoreMetrics> {
         if self.record_buffer.len() > 1 {
             let last = self.record_buffer.last().unwrap();
             let previous = self.record_buffer.get(self.record_buffer.len() - 2).unwrap();
             let mut res = CPUCoreMetrics{
                 average_frequency: 0,
                 active_percentage: 0,
-                cpu_time_percentage: 0.0,
             };
 
-            if last.values.len() >= 7 && previous.values.len() >= 7 {
+            if last.values.len() >= 3 && previous.values.len() >= 3 {
                 let (last_idle_time, last_mperf, last_aperf) = (last.values[0].clone(), last.values[1].clone(), last.values[2].clone());
                 let (previous_idle_time, previous_mperf, previous_aperf) = (previous.values[0].clone(), previous.values[1].clone(), previous.values[2].clone());
                 if let (Ok(last_idle_time), Ok(prev_idle_time)) = (
@@ -1626,20 +1571,6 @@ impl CPUCore {
                     (max_freq_khz as f64 * aperf_delta as f64 / mperf_delta as f64) as u64
                 } else {
                     0
-                };
-
-
-                // To switch between busy and total: change index 5->6 (node_busy->node_total)
-                // and index 3->4 (core_busy->core_total)
-                let core_busy_delta = last.values[3].trim().parse::<u64>().unwrap_or(0)
-                    .saturating_sub(previous.values[3].trim().parse::<u64>().unwrap_or(0));
-                let node_busy_delta = last.values[5].trim().parse::<u64>().unwrap_or(0)
-                    .saturating_sub(previous.values[5].trim().parse::<u64>().unwrap_or(0));
-                debug!("Core {} node_busy_delta: {}", self.id, node_busy_delta);
-                res.cpu_time_percentage = if node_busy_delta != 0 {
-                    core_busy_delta as f64 / node_busy_delta as f64 * 100.0
-                } else {
-                    0.0
                 };
 
                 return Some(res);
@@ -1818,7 +1749,6 @@ pub struct MultiValuedRecord {
 pub struct CPUCoreMetrics {
     average_frequency: u64,
     active_percentage: u64,
-    pub cpu_time_percentage: f64,
 }
 
 impl Record {
