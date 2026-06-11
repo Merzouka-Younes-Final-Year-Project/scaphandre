@@ -150,6 +150,7 @@ struct Host {
 #[derive(Serialize, Deserialize)]
 struct Report {
     host: Host,
+    idle: Option<f32>,
     consumers: Vec<Consumer>,
     sockets: Vec<Socket>,
 }
@@ -522,8 +523,14 @@ impl JsonExporter {
 
         match host_report {
             Some(host) => {
+                let idle = metrics
+                    .iter()
+                    .find(|x| x.name == "scaph_host_idle_power_microwatts")
+                    .and_then(|m| format!("{}", m.metric_value).parse::<f32>().ok());
+
                 let report = Report {
                     host,
+                    idle,
                     consumers: top_consumers,
                     sockets: all_sockets,
                 };

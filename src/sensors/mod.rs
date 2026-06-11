@@ -21,6 +21,7 @@ use std::os::unix::fs::FileExt;
 use sysinfo::{CpuExt, Pid, System, SystemExt};
 use sysinfo::{DiskExt, DiskType};
 use utils::{current_system_time_since_epoch, IProcess, ProcessTracker};
+use std::cmp::min;
 
 // !!!!!!!!!!!!!!!!! Sensor !!!!!!!!!!!!!!!!!!!!!!!
 /// Sensor trait, the Sensor API.
@@ -461,6 +462,21 @@ impl Topology {
                 }
             }
         }
+    }
+
+    pub fn get_idle_power(&self) -> Option<Record> {
+        let mut total = 0_u64;
+        for s in &self.sockets {
+            if let Some(Ok(idle)) = s.get_idle_power().map(|r| r.value.parse::<u64>()) {
+                total += idle;
+            }
+        }
+
+        Some(Record::new(
+            current_system_time_since_epoch(),
+            total.to_string(),
+            units::Unit::MicroWatt,
+        ))
     }
 
     /// Returns a Record instance containing the difference (attribute by attribute, except timestamp which will be the timestamp from the last record)
@@ -1241,7 +1257,11 @@ impl CPUSocket {
             let (idle, total) = stat.get_idle_and_total();
             debug!("CPUSocket {} idle percentage {}", self.id, idle as f64 / total as f64);
             if (idle as f64 / total as f64) >= self.idle_percentage_threshold {
-                if let Some(Ok(conso_core)) = self.get_records_diff_power_microwatts().map(|r| r.value.parse::<u64>()) {
+                if let Some(Ok(mut conso_core)) = self.get_records_diff_power_microwatts().map(|r| r.value.parse::<u64>()) {
+                    if let Some(Ok(idle_conso)) = self.get_idle_power().map(|r| r.value.parse::<u64>()) {
+                        conso_core = min(conso_core, idle_conso);
+                        debug!("Found Lower IDLE Consumption: {conso_core}");
+                    }
                     return Some(Record::new(
                         current_system_time_since_epoch(),
                         conso_core.to_string(),
@@ -1254,6 +1274,7 @@ impl CPUSocket {
     }
 
     pub fn get_idle_power(&self) -> Option<Record> {
+        debug!("Inside idle power calculation function");
         if !self.idle_record_buffer.is_empty() {
             let consumptions = self.idle_record_buffer
                 .iter()
