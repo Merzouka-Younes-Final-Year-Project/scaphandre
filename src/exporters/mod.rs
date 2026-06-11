@@ -493,7 +493,7 @@ impl MetricGenerator {
                 });
             }
 
-            if let Some(idle) = self.topology.get_idle_power() {
+            if let Some(idle) = self.topology.get_idle_power_microwatts() {
                 self.data.push(Metric {
                     name: String::from("scaph_host_idle_power_microwatts"),
                     metric_type: String::from("gauge"),

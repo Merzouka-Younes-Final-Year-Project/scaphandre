@@ -464,7 +464,7 @@ impl Topology {
         }
     }
 
-    pub fn get_idle_power(&self) -> Option<Record> {
+    pub fn get_idle_power_microwatts(&self) -> Option<Record> {
         let mut total = 0_u64;
         for s in &self.sockets {
             if let Some(Ok(idle)) = s.get_idle_power().map(|r| r.value.parse::<u64>()) {
@@ -514,6 +514,14 @@ impl Topology {
     /// last and previous measurement, in microwatts.
     pub fn get_records_diff_power_microwatts(&self) -> Option<Record> {
         if self.record_buffer.len() > 1 {
+            let idle_conso = self
+                .get_idle_power_microwatts()
+                .map(|r| r.value.parse::<u64>())
+                .unwrap_or(Ok(0))
+                .unwrap_or(0);
+
+            debug!("Total idle power: {idle_conso}");
+
             let last_record = self.record_buffer.last().unwrap();
             let previous_record = self
                 .record_buffer
@@ -531,7 +539,7 @@ impl Topology {
                         let microwatts = microjoules as f64 / time_diff;
                         return Some(Record::new(
                             last_record.timestamp,
-                            (microwatts as u64).to_string(),
+                            (microwatts as u64 - idle_conso).to_string(),
                             units::Unit::MicroWatt,
                         ));
                     }
@@ -891,7 +899,7 @@ impl Topology {
                     let conso_f64 = conso.value.parse::<f64>().unwrap();
                     let mut total_cores_coef = 0.0_f64;
                     for s in &self.sockets {
-                        for c in s.get_cores_passive() {
+                        for c in &s.cpu_cores {
                             if let Some(core) = c.get_core_metrics_delta() {
                                 total_cores_coef += core.active_percentage as f64 * core.average_frequency as f64;
                             }
@@ -899,7 +907,7 @@ impl Topology {
                     }
                     let mut result = 0.0_f64;
                     for s in &self.sockets {
-                        for c in s.get_cores_passive() {
+                        for c in &s.cpu_cores {
                             if let Some(core) = c.get_core_metrics_delta() {
                                 let core_conso = (
                                 (core.active_percentage as f64 * core.average_frequency as f64) /

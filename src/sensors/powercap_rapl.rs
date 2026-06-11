@@ -76,20 +76,9 @@ impl RecordReader for Topology {
         // if psys is available, return psys
         // else return pkg + dram + F(disks)
         //
-        let mut idle_conso = 0_u64;
-        for s in &self.sockets {
-            if let Some(Ok(conso)) = s.get_idle_power().map(|r| r.value.parse::<u64>()) {
-                idle_conso += conso;
-            }
-        }
-
-        debug!("Total idle power: {idle_conso}");
 
         if let Some(mut psys_record) = self.get_rapl_psys_energy_microjoules() {
             debug!("Using PSYS metric");
-            if let Ok(conso) = psys_record.value.parse::<u64>() {
-                psys_record.value = (conso - idle_conso).to_string();
-            }
             Ok(psys_record)
         } else {
             let mut total: i128 = 0;
@@ -122,7 +111,7 @@ impl RecordReader for Topology {
             }
             Ok(Record::new(
                 current_system_time_since_epoch(),
-                (total as u128 - idle_conso as u128).to_string(),
+                total.to_string(),
                 Unit::MicroJoule,
             ))
         }
