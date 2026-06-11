@@ -467,7 +467,7 @@ impl Topology {
     pub fn get_idle_power_microwatts(&self) -> Option<Record> {
         let mut total = 0_u64;
         for s in &self.sockets {
-            if let Some(Ok(idle)) = s.get_idle_power().map(|r| r.value.parse::<u64>()) {
+            if let Some(Ok(idle)) = s.get_idle_power_microwatts().map(|r| r.value.parse::<u64>()) {
                 total += idle;
             }
         }
@@ -520,7 +520,7 @@ impl Topology {
                 .unwrap_or(Ok(0))
                 .unwrap_or(0);
 
-            debug!("Total idle power: {idle_conso}");
+            debug!("Total IDLE power Diff: {idle_conso}");
 
             let last_record = self.record_buffer.last().unwrap();
             let previous_record = self
@@ -1266,7 +1266,7 @@ impl CPUSocket {
             debug!("CPUSocket {} idle percentage {}", self.id, idle as f64 / total as f64);
             if (idle as f64 / total as f64) >= self.idle_percentage_threshold {
                 if let Some(Ok(mut conso_core)) = self.get_records_diff_power_microwatts().map(|r| r.value.parse::<u64>()) {
-                    if let Some(Ok(idle_conso)) = self.get_idle_power().map(|r| r.value.parse::<u64>()) {
+                    if let Some(Ok(idle_conso)) = self.get_idle_power_microwatts().map(|r| r.value.parse::<u64>()) {
                         conso_core = min(conso_core, idle_conso);
                         debug!("Found Lower IDLE Consumption: {conso_core}");
                     }
@@ -1281,7 +1281,7 @@ impl CPUSocket {
         None
     }
 
-    pub fn get_idle_power(&self) -> Option<Record> {
+    pub fn get_idle_power_microwatts(&self) -> Option<Record> {
         debug!("Inside idle power calculation function");
         if !self.idle_record_buffer.is_empty() {
             let consumptions = self.idle_record_buffer

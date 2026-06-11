@@ -693,7 +693,7 @@ impl MetricGenerator {
                 }
 
 
-                if let Some(power) = socket.get_idle_power() {
+                if let Some(power) = socket.get_idle_power_microwatts() {
                     let socket_power_microwatts = &power.value;
                     info!("Exporter IDLE added");
 
