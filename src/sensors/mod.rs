@@ -14,7 +14,7 @@ pub mod units;
 pub mod utils;
 #[cfg(target_os = "linux")]
 use procfs::{CpuInfo, CpuTime, KernelStats};
-use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration, vec};
+use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration, u64, vec};
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::FileExt;
 #[allow(unused_imports)]
@@ -471,6 +471,7 @@ impl Topology {
                 total += idle;
             }
         }
+        debug!("Topology IDLE: {total}");
 
         Some(Record::new(
             current_system_time_since_epoch(),
@@ -491,20 +492,6 @@ impl Topology {
             if previous_value <= last_value {
                 let diff = last_value - previous_value;
                 return Some(Record::new(last.timestamp, diff.to_string(), last.unit));
-            }
-        }
-        None
-    }
-
-    // NOTE: create a function that would use the records diff and map it to cores using frequency
-    // and c-states
-    pub fn get_records_diff_power_microwatts_per_core(&self) -> Option<Vec<(CPUCore, Record)>> {
-        for s in &self.sockets {
-            if s.get_records_diff_power_microwatts().is_some() {
-                for c in s.get_cores_passive() {
-                    let res = c.get_core_metrics_delta().unwrap();
-                    info!("Core {} total active time percentage: {}, average frequency: {}, cpu time percentage: {}", c.id, res.active_percentage, res.average_frequency, res.cpu_time_percentage);
-                }
             }
         }
         None
@@ -790,7 +777,6 @@ impl Topology {
 
     pub fn get_process_power_consumption_microwatts(&self, pid: Pid) -> Option<Record> {
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
-            self.get_records_diff_power_microwatts_per_core();
             let process_cpu_percentage = self.get_process_cpu_usage_percentage(pid).unwrap();
             let topo_conso = self.get_records_diff_power_microwatts();
             if let Some(conso) = &topo_conso {
@@ -891,9 +877,6 @@ impl Topology {
                         ),
                     ),
                 );
-                self.get_records_diff_power_microwatts_per_core();
-                // NOTE: This should be a per core usage percentage
-                // NOTE: This should return a per core diff power microwatts
                 let topo_conso = self.get_records_diff_power_microwatts();
                 if let Some(conso) = &topo_conso {
                     let conso_f64 = conso.value.parse::<f64>().unwrap();
@@ -1480,7 +1463,13 @@ impl CPUSocket {
                 debug!("socket : l1067: microwatts: {}", microwatts);
                 return Some(Record::new(
                     last_record.timestamp,
-                    (microwatts as u64).to_string(),
+                    (
+                        microwatts as u64 -
+                        self
+                            .get_idle_power_microwatts()
+                            .map(|r| r.value.parse::<u64>().unwrap_or(0))
+                            .unwrap_or(0)
+                    ).to_string(),
                     units::Unit::MicroWatt,
                 ));
             }
