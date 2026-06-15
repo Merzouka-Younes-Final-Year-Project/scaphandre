@@ -1,5 +1,5 @@
 # Stage 1: install tools and cache dependencies
-FROM rust:1.87.0 AS planner
+FROM rust:1.91.0 AS planner
 WORKDIR /app
 
 # Install nightly toolchain (needed to build the eBPF crate with -Z build-std)
@@ -17,7 +17,7 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 2: cache dependencies
-FROM rust:1.87.0 AS cacher
+FROM rust:1.91.0 AS cacher
 WORKDIR /app
 
 RUN rustup toolchain install nightly --component rust-src
@@ -31,7 +31,7 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 # Stage 3: build
-FROM rust:1.87.0 AS builder
+FROM rust:1.91.0 AS builder
 WORKDIR /app
 
 RUN rustup toolchain install nightly --component rust-src
@@ -48,7 +48,7 @@ RUN cargo build --release
 # Stage 4: runtime
 # Loading BPF programs requires elevated privileges.
 # Run with: docker run --privileged  (or --cap-add CAP_BPF --cap-add CAP_PERFMON --cap-add CAP_SYS_ADMIN)
-FROM ubuntu:22.04 AS runtime
+FROM debian:trixie-slim AS runtime
 WORKDIR /app
 
 RUN apt-get update \
