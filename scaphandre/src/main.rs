@@ -1,5 +1,7 @@
 //! Generic sensor and transmission agent for energy consumption related metrics.
 
+mod bpf;
+
 use clap::{command, ArgAction, Parser, Subcommand};
 use colored::Colorize;
 use scaphandre::{exporters, sensors::Sensor};
@@ -232,6 +234,19 @@ fn parse_cli_and_run_exporter() {
     let cli = Cli::parse();
     loggerv::init_with_verbosity(cli.verbose.into()).expect("unable to initialize the logger");
 
+    // Build the tokio runtime for the async BPF setup. We do this manually
+    // so that exporters which create their own internal runtimes (e.g. Prometheus)
+    // don't panic due to nested #[tokio::main] usage.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+
+    // Load eBPF program and start the log-flush task inside the runtime.
+    // The returned handle keeps the program loaded and attached for the
+    // lifetime of the process.
+    let _ebpf = rt.block_on(bpf::init()).expect("failed to load eBPF program");
+
     let sensor = build_sensor(&cli);
     let no_header = cli.no_header;
     let exporter_choice = cli.exporter;
@@ -240,7 +255,11 @@ fn parse_cli_and_run_exporter() {
         print_scaphandre_header(exporter.kind());
     }
 
-    exporter.run();
+    // Run the blocking exporter loop via block_in_place so that the tokio
+    // runtime (and the BPF logger task running on it) stays alive alongside it.
+    rt.block_on(async {
+        tokio::task::block_in_place(|| exporter.run());
+    });
 }
 
 fn build_exporter(choice: ExporterChoice, sensor: &dyn Sensor) -> Box<dyn exporters::Exporter> {

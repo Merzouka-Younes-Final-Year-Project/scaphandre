@@ -8,6 +8,7 @@ use aya_ebpf::{
     programs::TracePointContext,
     helpers::bpf_ktime_get_ns,
 };
+use aya_log_ebpf::info;
 
 const MAX_KEYS: u32 = 1024;
 
@@ -61,6 +62,7 @@ fn try_scaphandre(ctx: TracePointContext) -> Result<u32, u32> {
         } else {
             let _ = PID_TIMES.insert(prev_pid, delta, 0);
         }
+        info!(&ctx, "PID: {}, Delta: {}", prev_pid, delta);
     }
 
     // Record when the incoming task got switched ON
