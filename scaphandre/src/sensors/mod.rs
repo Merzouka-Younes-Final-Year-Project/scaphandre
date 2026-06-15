@@ -1461,6 +1461,7 @@ impl CPUSocket {
                     last_record.timestamp.as_secs_f64() - previous_record.timestamp.as_secs_f64();
                 let microwatts = microjoules as f64 / time_diff;
                 debug!("socket : l1067: microwatts: {}", microwatts);
+                debug!("Calculating Socket with IDLE.");
                 return Some(Record::new(
                     last_record.timestamp,
                     (

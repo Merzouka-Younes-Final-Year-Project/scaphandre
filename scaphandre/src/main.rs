@@ -233,8 +233,10 @@ fn parse_cli_and_run_exporter() {
     loggerv::init_with_verbosity(cli.verbose.into()).expect("unable to initialize the logger");
 
     let sensor = build_sensor(&cli);
-    let mut exporter = build_exporter(cli.exporter, &sensor);
-    if !cli.no_header {
+    let no_header = cli.no_header;
+    let exporter_choice = cli.exporter;
+    let mut exporter = build_exporter(exporter_choice, &sensor);
+    if !no_header {
         print_scaphandre_header(exporter.kind());
     }
 

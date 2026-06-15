@@ -1,0 +1,97 @@
+[package]
+name = "scaphandre"
+version = "1.0.0"
+authors = ["Benoit Petit <bpetit@hubblo.org>"]
+edition.workspace = true
+license.workspace = true
+description = "Electric power/energy consumption monitoring agent."
+repository = "https://github.com/hubblo-org/scaphandre"
+readme = "README.md"
+homepage = "https://scaphandre.hubblo.org"
+
+[dependencies]
+scaphandre-common = { path = "../scaphandre-common", features = ["user"] }
+
+# workspace deps
+anyhow = { workspace = true, default-features = true }
+aya = { workspace = true }
+aya-log = { workspace = true }
+clap = { workspace = true, features = ["cargo", "derive"] }
+chrono = { workspace = true, default-features = true }
+env_logger = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+regex = { workspace = true, default-features = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, default-features = true, optional = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt",
+    "rt-multi-thread",
+    "net",
+    "signal",
+    "time",
+    "io-util",
+    "io-std",
+    "fs",
+    "process",
+    "sync",
+], optional = true }
+
+# userspace-only deps
+loggerv = "0.7"
+hostname = "0.3.1"
+protobuf = "2.28.0"
+ordered-float = "2.0"
+time = "0.3"
+colored = "2.0"
+rand = { version = "0.7.3" }
+sysinfo = { version = "0.28.3" }
+riemann_client = { version = "0.9.0", optional = true }
+warp10 = { version = "2.0.0", optional = true }
+docker-sync = { version = "0.1.2", optional = true }
+k8s-sync = { version = "0.2.3", optional = true }
+hyper = { version = "0.14", features = ["full"], optional = true }
+isahc = { version = "1.7.2", optional = true }
+
+[target.'cfg(target_os="linux")'.dependencies]
+procfs = { version = "0.15.0" }
+
+[target.'cfg(target_os="windows")'.dependencies]
+windows = { version = "0.27.0", features = ["alloc","Win32_Storage_FileSystem","Win32_Foundation","Win32_Security","Win32_System_IO","Win32_System_Ioctl","Win32_System_Threading", "Win32_System_SystemInformation"] }
+windows-service = { version = "0.6.0" }
+raw-cpuid = { version = "10.5.0" }
+core_affinity = { version = "0.8.1" }
+x86 = { version = "0.52.0" }
+
+[build-dependencies]
+anyhow = { workspace = true }
+aya-build = { workspace = true }
+cargo_metadata = { workspace = true }
+# TODO(https://github.com/rust-lang/cargo/issues/12375): this should be an artifact dependency, but
+# it's not possible to tell cargo to use `-Z build-std` to build it. We cargo-in-cargo in the build
+# script to build this, but we want to teach cargo about the dependency so that cache invalidation
+# works properly.
+#
+# Note also that https://github.com/rust-lang/cargo/issues/10593 occurs when `target = ...` is added
+# to an artifact dependency; it seems possible to work around that by setting `resolver = "1"` in
+# Cargo.toml in the workspace root.
+#
+# Finally note that *any* usage of `artifact = ...` in *any* Cargo.toml in the workspace breaks
+# workflows with stable cargo; stable cargo outright refuses to load manifests that use unstable
+# features.
+scaphandre-ebpf = { path = "../scaphandre-ebpf" }
+
+[features]
+default = ["prometheus", "warpten", "json", "containers", "prometheuspush"]
+prometheus = ["hyper", "tokio"]
+riemann = ["riemann_client"]
+json = ["serde", "serde_json"]
+containers = ["docker-sync", "k8s-sync"]
+warpten = ["warp10"]
+prometheuspush = ["isahc"]
+qemu = []
+
+[[bin]]
+name = "scaphandre"
+path = "src/main.rs"
