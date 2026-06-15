@@ -2,13 +2,11 @@
 #![no_main]
 
 use aya_ebpf::{
-    EbpfContext,
     macros::{map, tracepoint},
     maps::PerCpuHashMap,
     programs::TracePointContext,
     helpers::bpf_ktime_get_ns,
 };
-use aya_log_ebpf::info;
 
 const MAX_KEYS: u32 = 1024;
 

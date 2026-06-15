@@ -408,6 +408,12 @@ impl ProcessTracker {
         if let Some(last_core_times) = &last.process.core_busy_times {
             if let Some(prev_core_times) = &prev.process.core_busy_times {
                 if prev_core_times.len() == last_core_times.len() {
+                    let tmp: Vec<u64> = prev_core_times
+                            .iter()
+                            .enumerate()
+                            .map(|t| last_core_times[t.0] - t.1)
+                            .collect();
+                    debug!("EBPF Core Delta: {}", tmp.iter().map(|n| n.to_string()).collect::<Vec<String>>().join(", "));
                     return Some(
                         prev_core_times
                             .iter()
@@ -917,7 +923,7 @@ mod tests {
         let self_pid_by_sysinfo = get_current_pid();
         let self_process_by_sysinfo = system.process(self_pid_by_sysinfo.unwrap()).unwrap();
 
-        let mut topo = Topology::new(HashMap::new(), None);
+        let mut topo = Topology::new(HashMap::new());
         topo.refresh();
         let self_process_by_scaph = IProcess::myself(&topo.proc_tracker).unwrap();
 
@@ -934,7 +940,7 @@ mod tests {
     fn process_records_added() {
         use super::*;
         use crate::sensors::Topology;
-        let mut topo = Topology::new(HashMap::new(), None);
+        let mut topo = Topology::new(HashMap::new());
         topo.refresh();
         let proc = IProcess::myself(&topo.proc_tracker).unwrap();
         let mut tracker = ProcessTracker::new(3, None);

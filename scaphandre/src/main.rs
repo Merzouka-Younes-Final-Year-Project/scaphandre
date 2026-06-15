@@ -245,6 +245,7 @@ fn parse_cli_and_run_exporter() {
     let mut _ebpf_for_logger = bpf::load().expect("failed to load eBPF program");
     rt.block_on(bpf::init_logger(&mut _ebpf_for_logger));
 
+
     let sensor = build_sensor(&cli);
     let no_header = cli.no_header;
     let exporter_choice = cli.exporter;

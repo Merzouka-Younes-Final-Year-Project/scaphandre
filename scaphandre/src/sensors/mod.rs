@@ -58,7 +58,7 @@ pub trait RecordReader {
 /// from the electricity consumption point of view,
 /// including the potentially multiple CPUSocket sockets.
 /// Owns a vector of CPUSocket structs representing each socket.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Topology {
     /// The CPU sockets found on the host, represented as CPUSocket instances attached to this topology
     pub sockets: Vec<CPUSocket>,
@@ -74,6 +74,8 @@ pub struct Topology {
     pub domains_names: Option<Vec<String>>,
     /// Sensor-specific data needed in the topology
     pub _sensor_data: HashMap<String, String>,
+    /// Ebpf Program Handle
+    pub ebpf: Option<Ebpf>,
 }
 
 impl RecordGenerator for Topology {
@@ -148,22 +150,39 @@ impl RecordGenerator for Topology {
 impl Default for Topology {
     fn default() -> Self {
         {
-            Self::new(HashMap::new(), None)
+            Self::new(HashMap::new())
+        }
+    }
+}
+
+impl Clone for Topology {
+    fn clone(&self) -> Self {
+        Topology {
+            sockets: self.sockets.clone(),
+            proc_tracker: self.proc_tracker.clone(),
+            stat_buffer: self.stat_buffer.clone(),
+            record_buffer: self.record_buffer.clone(),
+            buffer_max_kbytes: self.buffer_max_kbytes,
+            domains_names: self.domains_names.clone(),
+            _sensor_data: self._sensor_data.clone(),
+            ebpf: None, // Ebpf handles cannot be cloned; cloned topologies won't track eBPF data
         }
     }
 }
 
 impl Topology {
     /// Instanciates Topology and returns the instance
-    pub fn new(sensor_data: HashMap<String, String>, ebpf: Option<&mut Ebpf>) -> Topology {
+    pub fn new(sensor_data: HashMap<String, String>) -> Topology {
+        let mut ebpf = crate::bpf::load().ok();
         Topology {
             sockets: vec![],
-            proc_tracker: ProcessTracker::new(5, ebpf),
+            proc_tracker: ProcessTracker::new(5, ebpf.as_mut()),
             stat_buffer: vec![],
             record_buffer: vec![],
             buffer_max_kbytes: 1,
             domains_names: None,
             _sensor_data: sensor_data,
+            ebpf,
         }
     }
 
@@ -527,7 +546,7 @@ impl Topology {
                         let microwatts = microjoules as f64 / time_diff;
                         return Some(Record::new(
                             last_record.timestamp,
-                            (microwatts as u64 - idle_conso).to_string(),
+                            (microwatts as u64).saturating_sub(idle_conso).to_string(),
                             units::Unit::MicroWatt,
                         ));
                     }
@@ -812,6 +831,7 @@ impl Topology {
                 .map(|c| c.get_core_metrics_delta())
                 .collect();
             if let Some(core_time_deltas) = self.get_proc_tracker().get_per_core_cpu_time_delta(pid) {
+                debug!("Gotten EBPF per core times.");
                 core_percentages = Some(
                     cores.iter().enumerate().map(|t| {
                         if let Some(core_metrics) = &cores_metrics[t.0] {
@@ -824,6 +844,7 @@ impl Topology {
             }
             if let Some(process_cpu_percentage) = self.get_proc_tracker().get_process_cpu_time_delta_as_percentage(pid) {
                 if core_percentages.is_none() {
+                    debug!("Falling back to standard non-EBPF method");
                     core_percentages = Some(
                         cores_metrics
                             .iter()
@@ -1493,12 +1514,12 @@ impl CPUSocket {
                 return Some(Record::new(
                     last_record.timestamp,
                     (
-                        microwatts as u64 -
-                        self
-                            .get_idle_power_microwatts()
-                            .map(|r| r.value.parse::<u64>().unwrap_or(0))
-                            .unwrap_or(0)
-                    ).to_string(),
+                        (microwatts as u64)
+                            .saturating_sub(self
+                                .get_idle_power_microwatts()
+                                .map(|r| r.value.parse::<u64>().unwrap_or(0))
+                                .unwrap_or(0)
+                            )).to_string(),
                     units::Unit::MicroWatt,
                 ));
             }
