@@ -5,6 +5,7 @@
 //! Final monitoring data is sent to or exposed for monitoring tools thanks to *exporters*.
 #[macro_use]
 extern crate log;
+pub mod bpf;
 pub mod exporters;
 pub mod sensors;
 

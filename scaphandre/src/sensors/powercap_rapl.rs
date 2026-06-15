@@ -1,7 +1,6 @@
 use crate::sensors::units::Unit::MicroJoule;
 use crate::sensors::utils::current_system_time_since_epoch;
 use crate::sensors::{CPUSocket, Domain, Record, RecordReader, Sensor, Topology};
-use aya::Ebpf;
 use procfs::{modules, KernelModule};
 use regex::Regex;
 use std::collections::HashMap;
@@ -155,9 +154,8 @@ impl Sensor for PowercapRAPLSensor {
             warn!("Couldn't find intel_rapl modules.");
         }
 
-
-
-        let mut topo = Topology::new(HashMap::new(), None);
+        let mut ebpf = crate::bpf::load().ok();
+        let mut topo = Topology::new(HashMap::new(), ebpf.as_mut());
         let re_socket = Regex::new(r"^.*/intel-rapl:\d+$").unwrap();
         let re_domain = Regex::new(r"^.*/intel-rapl:\d+:\d+$").unwrap();
         let re_socket_mmio = Regex::new(r"^.*/intel-rapl-mmio:\d+$").unwrap();

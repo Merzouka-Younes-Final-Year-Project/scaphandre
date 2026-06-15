@@ -1,9 +1,8 @@
 use aya::programs::TracePoint;
 use log::warn;
 
-/// Loads the eBPF program, attaches it to sched_switch, and spawns the log
-/// flush task. Returns the Ebpf handle so the caller can access maps later.
-pub async fn init() -> anyhow::Result<aya::Ebpf> {
+/// Loads the eBPF program and attaches it to sched_switch. Returns the Ebpf handle.
+pub fn load() -> anyhow::Result<aya::Ebpf> {
     let rlim = libc::rlimit {
         rlim_cur: libc::RLIM_INFINITY,
         rlim_max: libc::RLIM_INFINITY,
@@ -18,26 +17,33 @@ pub async fn init() -> anyhow::Result<aya::Ebpf> {
         "/scaphandre"
     )))?;
 
-    match aya_log::EbpfLogger::init(&mut ebpf) {
-        Err(e) => {
-            warn!("failed to initialize eBPF logger: {e}");
-        }
-        Ok(logger) => {
-            let mut logger =
-                tokio::io::unix::AsyncFd::with_interest(logger, tokio::io::Interest::READABLE)?;
-            tokio::task::spawn(async move {
-                loop {
-                    let mut guard = logger.readable_mut().await.unwrap();
-                    guard.get_inner_mut().flush();
-                    guard.clear_ready();
-                }
-            });
-        }
-    }
-
     let program: &mut TracePoint = ebpf.program_mut("scaphandre").unwrap().try_into()?;
     program.load()?;
     program.attach("sched", "sched_switch")?;
 
     Ok(ebpf)
+}
+
+/// Initialises the eBPF log-flush task on the current tokio runtime.
+/// Call this after `load()` from an async context.
+pub async fn init_logger(ebpf: &mut aya::Ebpf) {
+    match aya_log::EbpfLogger::init(ebpf) {
+        Err(e) => {
+            warn!("failed to initialize eBPF logger: {e}");
+        }
+        Ok(logger) => {
+            match tokio::io::unix::AsyncFd::with_interest(logger, tokio::io::Interest::READABLE) {
+                Err(e) => warn!("failed to create AsyncFd for eBPF logger: {e}"),
+                Ok(mut logger) => {
+                    tokio::task::spawn(async move {
+                        loop {
+                            let mut guard = logger.readable_mut().await.unwrap();
+                            guard.get_inner_mut().flush();
+                            guard.clear_ready();
+                        }
+                    });
+                }
+            }
+        }
+    }
 }

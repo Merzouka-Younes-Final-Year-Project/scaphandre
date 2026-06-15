@@ -1,10 +1,8 @@
 //! Generic sensor and transmission agent for energy consumption related metrics.
 
-mod bpf;
-
 use clap::{command, ArgAction, Parser, Subcommand};
 use colored::Colorize;
-use scaphandre::{exporters, sensors::Sensor};
+use scaphandre::{bpf, exporters, sensors::Sensor};
 
 #[cfg(target_os = "linux")]
 use scaphandre::sensors::powercap_rapl;
@@ -242,10 +240,10 @@ fn parse_cli_and_run_exporter() {
         .build()
         .expect("failed to build tokio runtime");
 
-    // Load eBPF program and start the log-flush task inside the runtime.
-    // The returned handle keeps the program loaded and attached for the
-    // lifetime of the process.
-    let _ebpf = rt.block_on(bpf::init()).expect("failed to load eBPF program");
+    // Set up the eBPF log-flush task. The sensor will load and attach the
+    // eBPF program itself; we only need the tokio runtime here for the logger.
+    let mut _ebpf_for_logger = bpf::load().expect("failed to load eBPF program");
+    rt.block_on(bpf::init_logger(&mut _ebpf_for_logger));
 
     let sensor = build_sensor(&cli);
     let no_header = cli.no_header;
