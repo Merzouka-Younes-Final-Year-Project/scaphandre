@@ -5,6 +5,7 @@
 
 #[cfg(target_os = "windows")]
 pub mod msr_rapl;
+use aya::Ebpf;
 use docker_sync::network;
 #[cfg(target_os = "windows")]
 use msr_rapl::get_msr_value;
@@ -19,7 +20,7 @@ use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, ti
 use std::os::unix::fs::FileExt;
 #[allow(unused_imports)]
 use sysinfo::{CpuExt, Pid, System, SystemExt};
-use sysinfo::{DiskExt, DiskType};
+use sysinfo::{DiskExt, DiskType, ProcessExt};
 use utils::{current_system_time_since_epoch, IProcess, ProcessTracker};
 use std::cmp::min;
 
@@ -147,17 +148,17 @@ impl RecordGenerator for Topology {
 impl Default for Topology {
     fn default() -> Self {
         {
-            Self::new(HashMap::new())
+            Self::new(HashMap::new(), None)
         }
     }
 }
 
 impl Topology {
     /// Instanciates Topology and returns the instance
-    pub fn new(sensor_data: HashMap<String, String>) -> Topology {
+    pub fn new(sensor_data: HashMap<String, String>, mut ebpf: Option<Ebpf>) -> Topology {
         Topology {
             sockets: vec![],
-            proc_tracker: ProcessTracker::new(5),
+            proc_tracker: ProcessTracker::new(5, ebpf),
             stat_buffer: vec![],
             record_buffer: vec![],
             buffer_max_kbytes: 1,
@@ -412,7 +413,7 @@ impl Topology {
                 .sysinfo
                 .processes()
                 .values()
-                .map(IProcess::new)
+                .map(|p| IProcess::new(p, pt.get_process_core_times(p.pid())))
                 .collect::<Vec<_>>();
             for p in current_procs {
                 match pt.add_process_record(p) {

@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-docker build -t scaphandre .
-
 docker run --rm \
     --cap-add CAP_BPF \
     --cap-add CAP_PERFMON \

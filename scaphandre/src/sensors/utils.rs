@@ -1,3 +1,5 @@
+use aya::Ebpf;
+use aya::maps::{Map, MapData, PerCpuHashMap};
 use ordered_float::*;
 #[cfg(target_os = "linux")]
 use procfs;
@@ -8,8 +10,7 @@ use std::io::{Error, ErrorKind};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use sysinfo::{
-    get_current_pid, CpuExt, CpuRefreshKind, Pid, Process, ProcessExt, ProcessStatus, System,
-    SystemExt,
+    CpuExt, CpuRefreshKind, Pid, PidExt, Process, ProcessExt, ProcessStatus, System, SystemExt, get_current_pid
 };
 #[cfg(all(target_os = "linux", feature = "containers"))]
 use {docker_sync::container::Container, k8s_sync::Pod};
@@ -71,8 +72,12 @@ pub struct IProcess {
     pub owner: u32,
     pub comm: String,
     pub cmdline: Vec<String>,
+    // CPU (all of them) busy time usage
     pub cpu_busy_time: u64,
+    // Node level busy CPU time
     pub node_busy_time: u64,
+    // Per-core Busy CPU time in Nanoseconds
+    pub core_busy_times: Option<Vec<u64>>,
     //CPU (all of them) time usage, as a percentage
     pub cpu_usage_percentage: f32,
     // Virtual memory used by the process (at the time the struct is created), in bytes
@@ -94,7 +99,7 @@ pub struct IProcess {
 }
 
 impl IProcess {
-    pub fn new(process: &Process) -> IProcess {
+    pub fn new(process: &Process, core_times: Option<Vec<u64>>) -> IProcess {
         let disk_usage = process.disk_usage();
         #[cfg(target_os = "linux")]
         {
@@ -122,6 +127,7 @@ impl IProcess {
                 owner: 0,
                 comm: String::from(process.exe().to_str().unwrap()),
                 cmdline: process.cmd().to_vec(),
+                core_busy_times: core_times,
                 cpu_busy_time,
                 node_busy_time,
                 cpu_usage_percentage: process.cpu_usage(),
@@ -185,11 +191,18 @@ impl IProcess {
     }
 
     pub fn myself(proc_tracker: &ProcessTracker) -> Result<IProcess, String> {
+        let core_times = proc_tracker
+            .core_times_map
+            .as_ref()
+            .and_then(|map| map.get(&get_current_pid().unwrap().as_u32(), 0).ok())
+            .map(|vals| vals.to_vec());
+
         Ok(IProcess::new(
             proc_tracker
                 .sysinfo
                 .process(get_current_pid().unwrap())
                 .unwrap(),
+            core_times
         ))
     }
 
@@ -210,13 +223,14 @@ pub fn page_size() -> Result<u64, String> {
     res
 }
 
-#[derive(Debug)]
 /// Manages ProcessRecord instances.
 pub struct ProcessTracker {
     /// Each subvector keeps track of records for a given PID.
     pub procs: Vec<Vec<ProcessRecord>>,
     /// Number of CPU cores to deal with
     pub nb_cores: usize,
+    /// Tracks the time in Nanoseconds that each process spends on a given core
+    pub core_times_map: Option<PerCpuHashMap<MapData, u32, u64>>,
     /// Maximum number of ProcessRecord instances that scaphandre is allowed to
     /// store, per PID (thus, for each subvector).
     pub max_records_per_process: u16,
@@ -230,11 +244,24 @@ pub struct ProcessTracker {
     pub regex_cgroup_containerd: Regex,
 }
 
+impl std::fmt::Debug for ProcessTracker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcessTracker")
+            .field("procs", &self.procs)
+            .field("nb_cores", &self.nb_cores)
+            .field("core_times_map", &"PerCpuHashMap<u32, u64>")
+            .field("max_records_per_process", &self.max_records_per_process)
+            .field("sysinfo", &self.sysinfo)
+            .finish()
+    }
+}
+
 impl Clone for ProcessTracker {
     fn clone(&self) -> ProcessTracker {
         ProcessTracker {
             procs: self.procs.clone(),
             max_records_per_process: self.max_records_per_process,
+            core_times_map: None,
             sysinfo: System::new_all(),
             #[cfg(feature = "containers")]
             regex_cgroup_docker: self.regex_cgroup_docker.clone(),
@@ -257,7 +284,7 @@ impl ProcessTracker {
     /// use scaphandre::sensors::utils::ProcessTracker;
     /// let tracker = ProcessTracker::new(5);
     /// ```
-    pub fn new(max_records_per_process: u16) -> ProcessTracker {
+    pub fn new(max_records_per_process: u16, mut ebpf: Option<Ebpf>) -> ProcessTracker {
         #[cfg(feature = "containers")]
         let regex_cgroup_docker = Regex::new(r"^.*/docker.*$").unwrap();
         #[cfg(feature = "containers")]
@@ -268,10 +295,19 @@ impl ProcessTracker {
         let mut system = System::new_all();
         system.refresh_cpu_specifics(CpuRefreshKind::everything());
         let nb_cores = system.cpus().len();
+        let mut core_times_map: Option<PerCpuHashMap<MapData, u32, u64>> = None;
+        if let Some(mut ebpf) = ebpf {
+            if let Some(map) = ebpf.take_map("PID_TIMES") {
+                if let Ok(map) = PerCpuHashMap::<MapData, u32, u64>::try_from(map) {
+                    core_times_map = Some(map);
+                }
+            }
+        }
 
         ProcessTracker {
             procs: vec![],
             max_records_per_process,
+            core_times_map,
             sysinfo: system,
             #[cfg(feature = "containers")]
             regex_cgroup_docker,
@@ -694,6 +730,13 @@ impl ProcessTracker {
         }
     }
 
+    pub fn get_process_core_times(&self, pid: Pid) -> Option<Vec<u64>> {
+        self.core_times_map
+            .as_ref()
+            .and_then(|map| map.get(&pid.as_u32(), 0).ok())
+            .map(|vals| vals.to_vec())
+    }
+
     /// Returns processes sorted by the highest consumers in first
     pub fn get_top_consumers(&self, top: u16) -> Vec<(IProcess, f64)> {
         let mut consumers: Vec<(IProcess, OrderedFloat<f64>)> = vec![];
@@ -713,8 +756,9 @@ impl ProcessTracker {
                     < top as usize
                 {
                     let pid = p.first().unwrap().process.pid;
+                    let core_times = self.get_process_core_times(pid);
                     if let Some(sysinfo_process) = self.sysinfo.process(pid as _) {
-                        let new_consumer = IProcess::new(sysinfo_process);
+                        let new_consumer = IProcess::new(sysinfo_process, core_times);
                         consumers.push((new_consumer, OrderedFloat(diff as f64)));
                         consumers.sort_by(|x, y| y.1.cmp(&x.1));
                         if consumers.len() > top as usize {
@@ -873,7 +917,7 @@ mod tests {
         let mut topo = Topology::new(HashMap::new());
         topo.refresh();
         let proc = IProcess::myself(&topo.proc_tracker).unwrap();
-        let mut tracker = ProcessTracker::new(3);
+        let mut tracker = ProcessTracker::new(3, None);
         for _ in 0..3 {
             assert_eq!(tracker.add_process_record(proc.clone()).is_ok(), true);
         }
@@ -885,7 +929,7 @@ mod tests {
     #[test]
     fn process_records_cleaned() {
         use super::*;
-        let mut tracker = ProcessTracker::new(3);
+        let mut tracker = ProcessTracker::new(3, None);
         let proc = IProcess::myself(&tracker).unwrap();
         for _ in 0..5 {
             assert_eq!(tracker.add_process_record(proc.clone()).is_ok(), true);
