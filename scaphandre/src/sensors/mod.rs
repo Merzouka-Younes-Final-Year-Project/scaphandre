@@ -155,7 +155,7 @@ impl Default for Topology {
 
 impl Topology {
     /// Instanciates Topology and returns the instance
-    pub fn new(sensor_data: HashMap<String, String>, mut ebpf: Option<Ebpf>) -> Topology {
+    pub fn new(sensor_data: HashMap<String, String>, ebpf: Option<&mut Ebpf>) -> Topology {
         Topology {
             sockets: vec![],
             proc_tracker: ProcessTracker::new(5, ebpf),
@@ -801,7 +801,39 @@ impl Topology {
     pub fn get_all_per_process(&self, pid: Pid) -> Option<HashMap<String, (String, Record)>> {
         let mut res = HashMap::new();
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
-            if let Some(process_cpu_percentage) = self.get_proc_tracker().get_process_cpu_time_delta_percentage(pid) {
+            let mut core_percentages: Option<Vec<f64>> = None;
+            let mut cores: Vec<CPUCore> = self.sockets
+                .iter()
+                .flat_map(|s| s.cpu_cores.iter().cloned())
+                .collect();
+            cores.sort_by_key(|c| c.id);
+            let cores_metrics: Vec<Option<CPUCoreMetrics>> = cores
+                .iter()
+                .map(|c| c.get_core_metrics_delta())
+                .collect();
+            if let Some(core_time_deltas) = self.get_proc_tracker().get_per_core_cpu_time_delta(pid) {
+                core_percentages = Some(
+                    cores.iter().enumerate().map(|t| {
+                        if let Some(core_metrics) = &cores_metrics[t.0] {
+                            core_time_deltas[t.1.id as usize] as f64 / core_metrics.active_time as f64
+                        } else {
+                            0.0_f64
+                        }
+                    }).collect()
+                )
+            }
+            if let Some(process_cpu_percentage) = self.get_proc_tracker().get_process_cpu_time_delta_as_percentage(pid) {
+                if core_percentages.is_none() {
+                    core_percentages = Some(
+                        cores_metrics
+                            .iter()
+                            .map(|o| {
+                                o.as_ref().map(|metrics| {
+                                    (process_cpu_percentage / 100.0_f64) * (metrics.cpu_time_percentage / 100.0_f64)
+                                }).unwrap_or(0.0_f64)
+                            }).collect()
+                    );
+                }
                 res.insert(
                     String::from("scaph_process_cpu_usage_percentage"),
                     (String::from("CPU time consumed by the process, as a percentage of the capacity of all the CPU Cores"),
@@ -878,30 +910,25 @@ impl Topology {
                         ),
                     ),
                 );
+            }
+            if let Some(core_percentages) = core_percentages {
                 let topo_conso = self.get_records_diff_power_microwatts();
                 if let Some(conso) = &topo_conso {
                     let conso_f64 = conso.value.parse::<f64>().unwrap();
-                    let mut total_cores_coef = 0.0_f64;
-                    for s in &self.sockets {
-                        for c in &s.cpu_cores {
-                            if let Some(core) = c.get_core_metrics_delta() {
-                                total_cores_coef += core.active_percentage as f64 * core.average_frequency as f64;
+                    let get_core_coef = |metrics: &CPUCoreMetrics| -> f64 {
+                        metrics.active_percentage as f64 * metrics.average_frequency as f64
+                    };
+                    let total_cores_coef: f64 = cores_metrics.iter().map(|o| {
+                        o.as_ref().map(get_core_coef).unwrap_or(0.0_f64)
+                    }).sum();
+                    let result: f64 = cores_metrics.iter().enumerate().map(|t| {
+                        t.1.as_ref().map(|metrics| {
+                            if total_cores_coef == 0_f64 { 0_f64 } else {
+                                // Process percentage for a given core * Core energy
+                                core_percentages[t.0] * (get_core_coef(metrics) / total_cores_coef) * conso_f64 
                             }
-                        }
-                    }
-                    let mut result = 0.0_f64;
-                    for s in &self.sockets {
-                        for c in &s.cpu_cores {
-                            if let Some(core) = c.get_core_metrics_delta() {
-                                let core_conso = (
-                                (core.active_percentage as f64 * core.average_frequency as f64) /
-                                total_cores_coef) * conso_f64;
-                                let process_busy_core_percentage = 
-                                (process_cpu_percentage / 100.0_f64) * (core.cpu_time_percentage / 100.0_f64);
-                                result += core_conso * process_busy_core_percentage;
-                            }
-                        }
-                    }
+                        }).unwrap_or(0_f64)
+                    }).sum();
                     res.insert(
                         String::from("scaph_process_power_consumption_microwatts"),
                         (
@@ -1700,6 +1727,7 @@ impl CPUCore {
                 average_frequency: 0,
                 active_percentage: 0,
                 cpu_time_percentage: 0.0,
+                active_time: 0,
             };
 
             if last.values.len() >= 7 && previous.values.len() >= 7 {
@@ -1735,6 +1763,7 @@ impl CPUCore {
 
                 let core_busy_delta = last.values[3].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[3].trim().parse::<u64>().unwrap_or(0));
+                res.active_time = core_busy_delta;
                 let node_busy_delta = last.values[5].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[5].trim().parse::<u64>().unwrap_or(0));
                 res.cpu_time_percentage = if node_busy_delta != 0 {
@@ -1919,7 +1948,8 @@ pub struct MultiValuedRecord {
 pub struct CPUCoreMetrics {
     average_frequency: u64,
     active_percentage: u64,
-    pub cpu_time_percentage: f64,
+    cpu_time_percentage: f64,
+    active_time: u64,
 }
 
 impl Record {

@@ -1,5 +1,5 @@
 use aya::Ebpf;
-use aya::maps::{Map, MapData, PerCpuHashMap};
+use aya::maps::{MapData, PerCpuHashMap};
 use ordered_float::*;
 #[cfg(target_os = "linux")]
 use procfs;
@@ -284,7 +284,7 @@ impl ProcessTracker {
     /// use scaphandre::sensors::utils::ProcessTracker;
     /// let tracker = ProcessTracker::new(5);
     /// ```
-    pub fn new(max_records_per_process: u16, mut ebpf: Option<Ebpf>) -> ProcessTracker {
+    pub fn new(max_records_per_process: u16, ebpf: Option<&mut Ebpf>) -> ProcessTracker {
         #[cfg(feature = "containers")]
         let regex_cgroup_docker = Regex::new(r"^.*/docker.*$").unwrap();
         #[cfg(feature = "containers")]
@@ -296,7 +296,7 @@ impl ProcessTracker {
         system.refresh_cpu_specifics(CpuRefreshKind::everything());
         let nb_cores = system.cpus().len();
         let mut core_times_map: Option<PerCpuHashMap<MapData, u32, u64>> = None;
-        if let Some(mut ebpf) = ebpf {
+        if let Some(ebpf) = ebpf {
             if let Some(map) = ebpf.take_map("PID_TIMES") {
                 if let Ok(map) = PerCpuHashMap::<MapData, u32, u64>::try_from(map) {
                     core_times_map = Some(map);
@@ -391,7 +391,7 @@ impl ProcessTracker {
     
     }
 
-    pub fn get_process_cpu_time_delta_percentage(&self, pid: Pid) -> Option<f64> {
+    pub fn get_process_cpu_time_delta_as_percentage(&self, pid: Pid) -> Option<f64> {
         let records = self.find_records(pid)?;
         let last = records.get(0)?;
         let prev = records.get(1)?;
@@ -399,6 +399,26 @@ impl ProcessTracker {
         let node_delta = last.process.node_busy_time.saturating_sub(prev.process.node_busy_time);
         if node_delta == 0 { return None; }
         Some(cpu_delta as f64 / node_delta as f64 * 100.0)
+    }
+
+    pub fn get_per_core_cpu_time_delta(&self, pid: Pid) -> Option<Vec<u64>> {
+        let records = self.find_records(pid)?;
+        let last = records.get(0)?;
+        let prev = records.get(1)?;
+        if let Some(last_core_times) = &last.process.core_busy_times {
+            if let Some(prev_core_times) = &prev.process.core_busy_times {
+                if prev_core_times.len() == last_core_times.len() {
+                    return Some(
+                        prev_core_times
+                            .iter()
+                            .enumerate()
+                            .map(|t| last_core_times[t.0] - t.1)
+                            .collect()
+                    );
+                }
+            }
+        }
+        None
     }
 
     pub fn get_process_last_record(&self, pid: Pid) -> Option<&ProcessRecord> {
@@ -897,7 +917,7 @@ mod tests {
         let self_pid_by_sysinfo = get_current_pid();
         let self_process_by_sysinfo = system.process(self_pid_by_sysinfo.unwrap()).unwrap();
 
-        let mut topo = Topology::new(HashMap::new());
+        let mut topo = Topology::new(HashMap::new(), None);
         topo.refresh();
         let self_process_by_scaph = IProcess::myself(&topo.proc_tracker).unwrap();
 
@@ -914,7 +934,7 @@ mod tests {
     fn process_records_added() {
         use super::*;
         use crate::sensors::Topology;
-        let mut topo = Topology::new(HashMap::new());
+        let mut topo = Topology::new(HashMap::new(), None);
         topo.refresh();
         let proc = IProcess::myself(&topo.proc_tracker).unwrap();
         let mut tracker = ProcessTracker::new(3, None);
