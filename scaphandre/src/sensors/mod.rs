@@ -831,11 +831,17 @@ impl Topology {
                 .map(|c| c.get_core_metrics_delta())
                 .collect();
             if let Some(core_time_deltas) = self.get_proc_tracker().get_per_core_cpu_time_delta(pid) {
-                debug!("Gotten EBPF per core times.");
+                debug!("Gotten EBPF per core times process {pid}");
                 core_percentages = Some(
                     cores.iter().enumerate().map(|t| {
                         if let Some(core_metrics) = &cores_metrics[t.0] {
-                            core_time_deltas[t.1.id as usize] as f64 / core_metrics.active_time as f64
+                            if core_metrics.active_time != 0 {
+                                let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
+                                let active_time_ns = core_metrics.active_time * 1_000_000_000 / ticks_per_sec;
+                                core_time_deltas[t.1.id as usize] as f64 / active_time_ns as f64
+                            } else {
+                                0_f64
+                            }
                         } else {
                             0.0_f64
                         }
@@ -946,10 +952,16 @@ impl Topology {
                         t.1.as_ref().map(|metrics| {
                             if total_cores_coef == 0_f64 { 0_f64 } else {
                                 // Process percentage for a given core * Core energy
-                                core_percentages[t.0] * (get_core_coef(metrics) / total_cores_coef) * conso_f64 
+                                let percentage = core_percentages[t.0];
+                                if !percentage.is_nan() {
+                                    percentage * (get_core_coef(metrics) / total_cores_coef) * conso_f64 
+                                } else {
+                                    0_f64
+                                }
                             }
                         }).unwrap_or(0_f64)
                     }).sum();
+                    debug!("EBPF Core percentage {} for process {pid} Power {result}", core_percentages.iter().map(|p| p.to_string()).collect::<Vec<String>>().join(", "));
                     res.insert(
                         String::from("scaph_process_power_consumption_microwatts"),
                         (
