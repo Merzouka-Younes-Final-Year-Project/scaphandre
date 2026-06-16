@@ -943,7 +943,7 @@ impl Topology {
                 if let Some(conso) = &topo_conso {
                     let conso_f64 = conso.value.parse::<f64>().unwrap();
                     let get_core_coef = |metrics: &CPUCoreMetrics| -> f64 {
-                        metrics.aperf as f64
+                        metrics.aperf as f64 * (metrics.aperf as f64 / metrics.mperf as f64)
                     };
                     let total_cores_coef: f64 = cores_metrics.iter().map(|o| {
                         o.as_ref().map(get_core_coef).unwrap_or(0.0_f64)
