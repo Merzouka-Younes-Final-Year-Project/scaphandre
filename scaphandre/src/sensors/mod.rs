@@ -943,11 +943,8 @@ impl Topology {
                 if let Some(conso) = &topo_conso {
                     let conso_f64 = conso.value.parse::<f64>().unwrap();
                     let get_core_coef = |metrics: &CPUCoreMetrics| -> f64 {
-                        metrics.average_frequency as f64
+                        metrics.aperf as f64
                     };
-                    debug!("Core coefficients: {}", cores_metrics.iter().map(|o| {
-                        o.as_ref().map(get_core_coef).unwrap_or(0.0_f64).to_string()
-                    }).collect::<Vec<String>>().join(", "));
                     let total_cores_coef: f64 = cores_metrics.iter().map(|o| {
                         o.as_ref().map(get_core_coef).unwrap_or(0.0_f64)
                     }).sum();
@@ -957,6 +954,7 @@ impl Topology {
                                 // Process percentage for a given core * Core energy
                                 let percentage = core_percentages[t.0];
                                 if !percentage.is_nan() {
+                                    debug!("Core {} coefficient {}", cores[t.0].id,  get_core_coef(metrics) / total_cores_coef);
                                     percentage * (get_core_coef(metrics) / total_cores_coef) * conso_f64 
                                 } else {
                                     0_f64
@@ -1764,6 +1762,8 @@ impl CPUCore {
                 active_percentage: 0,
                 cpu_time_percentage: 0.0,
                 active_time: 0,
+                aperf: 0,
+                mperf: 0,
             };
 
             if last.values.len() >= 7 && previous.values.len() >= 7 {
@@ -1782,6 +1782,9 @@ impl CPUCore {
                     .saturating_sub(previous.values[2].trim().parse::<u64>().unwrap_or(0));
                 let mperf_delta = last.values[1].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[1].trim().parse::<u64>().unwrap_or(0));
+
+                res.aperf = aperf_delta;
+                res.mperf = mperf_delta;
 
                 let max_freq_khz = fs::read_to_string(format!(
                     "/sys/devices/system/cpu/cpu{}/cpufreq/cpuinfo_max_freq",
@@ -1986,6 +1989,8 @@ pub struct CPUCoreMetrics {
     active_percentage: u64,
     cpu_time_percentage: f64,
     active_time: u64,
+    aperf: u64,
+    mperf: u64,
 }
 
 impl Record {
