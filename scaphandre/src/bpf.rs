@@ -41,6 +41,7 @@ pub fn load() -> anyhow::Result<aya::Ebpf> {
             true,
         )?;
     }
+    debug!("Loaded Tick eBPF program.");
 
     Ok(ebpf)
 }
