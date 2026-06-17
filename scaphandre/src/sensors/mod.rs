@@ -208,7 +208,11 @@ impl Topology {
         warn!("Sysinfo sees {}", sysinfo_cores.len());
         #[cfg(target_os = "linux")]
         let cpuinfo = CpuInfo::new().unwrap();
-        for (id, c) in (0_u16..).zip(sysinfo_cores.iter()) {
+        for (idx, c) in (0_u16..).zip(sysinfo_cores.iter()) {
+            let id: u16 = c.name()
+                .trim_start_matches(|ch: char| !ch.is_ascii_digit())
+                .parse()
+                .unwrap_or(idx);
             let mut info = HashMap::<String, String>::new();
             #[cfg(target_os = "linux")]
             {
@@ -863,7 +867,11 @@ impl Topology {
                 .map(|c| c.get_core_metrics_delta())
                 .collect();
             if let Some(core_time_deltas) = self.get_proc_tracker().get_per_core_cpu_time_delta(pid) {
-                debug!("Gotten EBPF per core times process {pid}");
+                debug!(
+                    "Gotten EBPF per core times process {pid}: {}, Core IDs: {}",
+                    core_time_deltas.iter().map(|v| v.to_string()).collect::<Vec<String>>().join(", "),
+                    cores.iter().map(|c| c.id.to_string()).collect::<Vec<String>>().join(", "),
+                );
                 core_percentages = Some(
                     cores.iter().enumerate().map(|t| {
                         if let Some(core_metrics) = &cores_metrics[t.0] {
