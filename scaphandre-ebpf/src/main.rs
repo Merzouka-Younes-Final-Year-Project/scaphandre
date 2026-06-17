@@ -74,6 +74,12 @@ pub fn sample_tick(_ctx: PerfEventContext) -> u32 {
     let pid = (bpf_get_current_pid_tgid() & 0xFFFF_FFFF) as u32;
 
     if let Some(p) = PID_LAST.get_ptr_mut(pid) {
+        let delta = now - unsafe { *p };
+        if let Some(p_time) = PID_TIMES.get_ptr_mut(pid) {
+            unsafe { *p_time += delta };
+        } else {
+            let _ = PID_TIMES.insert(pid, delta, 0);
+        }
         unsafe { *p = now };
     } else {
         let _ = PID_LAST.insert(pid, now, 0);
