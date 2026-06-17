@@ -517,6 +517,42 @@ impl Topology {
         None
     }
 
+    /// Returns the set of cores in all sockets
+    pub fn get_cores(&self) -> Vec<CPUCore> {
+        let mut cores = self.sockets
+            .iter()
+            .flat_map(|s| s.cpu_cores.iter().cloned())
+            .collect::<Vec<CPUCore>>();
+        cores.sort_by_key(|c| c.id);
+        cores
+    }
+    
+    /// Returns a MultiValuedRecord instance containing the per-core power consumed between
+    /// last and previous measurement, in microwatts.
+    pub fn get_core_diff_power_microwatts(&self) -> Option<MultiValuedRecord> {
+        let conso = self.get_records_diff_power_microwatts()
+            .and_then(|r| r.value.parse::<f64>().ok()).unwrap_or(0_f64);
+        let coefs = self.get_cores()
+            .iter()
+            .map(|c| {
+                if let Some(metrics) = c.get_core_metrics_delta() {
+                    metrics.aperf as f64 * (metrics.aperf as f64 / metrics.mperf as f64)
+                } else {
+                    0_f64
+                }
+            }).collect::<Vec<f64>>();
+        let total_coefs: f64 = coefs.iter().sum();
+        let coefs = coefs
+            .iter()
+            .map(|c| if total_coefs != 0_f64 { c/total_coefs } else { 0_f64 } * conso)
+            .collect::<Vec<f64>>();
+        Some(MultiValuedRecord::new(
+            current_system_time_since_epoch(),
+            coefs.iter().map(|c| c.to_string()).collect(),
+            coefs.iter().map(|_| units::Unit::Numeric).collect(),
+        ))
+    }
+
     /// Returns a Record instance containing the power consumed between
     /// last and previous measurement, in microwatts.
     pub fn get_records_diff_power_microwatts(&self) -> Option<Record> {
@@ -821,11 +857,7 @@ impl Topology {
         let mut res = HashMap::new();
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
             let mut core_percentages: Option<Vec<f64>> = None;
-            let mut cores: Vec<CPUCore> = self.sockets
-                .iter()
-                .flat_map(|s| s.cpu_cores.iter().cloned())
-                .collect();
-            cores.sort_by_key(|c| c.id);
+            let cores: Vec<CPUCore> = self.get_cores();
             let cores_metrics: Vec<Option<CPUCoreMetrics>> = cores
                 .iter()
                 .map(|c| c.get_core_metrics_delta())
@@ -939,38 +971,25 @@ impl Topology {
                 );
             }
             if let Some(core_percentages) = core_percentages {
-                let topo_conso = self.get_records_diff_power_microwatts();
-                if let Some(conso) = &topo_conso {
-                    let conso_f64 = conso.value.parse::<f64>().unwrap();
-                    let get_core_coef = |metrics: &CPUCoreMetrics| -> f64 {
-                        metrics.aperf as f64 * (metrics.aperf as f64 / metrics.mperf as f64)
-                    };
-                    let total_cores_coef: f64 = cores_metrics.iter().map(|o| {
-                        o.as_ref().map(get_core_coef).unwrap_or(0.0_f64)
-                    }).sum();
-                    let result: f64 = cores_metrics.iter().enumerate().map(|t| {
-                        t.1.as_ref().map(|metrics| {
-                            if total_cores_coef == 0_f64 { 0_f64 } else {
-                                // Process percentage for a given core * Core energy
-                                let percentage = core_percentages[t.0];
-                                if !percentage.is_nan() {
-                                    debug!("Core {} coefficient {}", cores[t.0].id,  get_core_coef(metrics) / total_cores_coef);
-                                    percentage * (get_core_coef(metrics) / total_cores_coef) * conso_f64 
-                                } else {
-                                    0_f64
-                                }
-                            }
-                        }).unwrap_or(0_f64)
-                    }).sum();
-                    debug!("EBPF Core percentage {} for process {pid} Power {result}", core_percentages.iter().map(|p| p.to_string()).collect::<Vec<String>>().join(", "));
-                    res.insert(
-                        String::from("scaph_process_power_consumption_microwatts"),
-                        (
-                            String::from("Total data read on disk by the process, in bytes"),
-                            Record::new(record.timestamp, result.to_string(), units::Unit::MicroWatt),
-                        ),
-                    );
-                }
+                let result = self.get_core_diff_power_microwatts().map(|r| {
+                    r.values
+                        .iter()
+                        .enumerate()
+                        .map(|t| {
+                            let conso = t.1;
+                            let percentage = core_percentages[t.0];
+                            conso.parse::<f64>().unwrap_or(0_f64) * percentage
+                        }).sum::<f64>()
+                }).unwrap_or(0_f64);
+                debug!("Simplified process {pid} energy {result}");
+                debug!("EBPF Core percentage {} for process {pid} Power {result}", core_percentages.iter().map(|p| p.to_string()).collect::<Vec<String>>().join(", "));
+                res.insert(
+                    String::from("scaph_process_power_consumption_microwatts"),
+                    (
+                        String::from("Total data read on disk by the process, in bytes"),
+                        Record::new(record.timestamp, result.to_string(), units::Unit::MicroWatt),
+                    ),
+                );
             }
         }
         Some(res)
@@ -1305,6 +1324,7 @@ impl CPUSocket {
         self.cpu_cores.push(core);
     }
 
+    /// Reads a new record for socket-level idle energy
     pub fn read_idle_record(&self) -> Option<Record> {
         if let Some(stat) = self.get_stats_diff() {
             let (idle, total) = stat.get_idle_and_total();
@@ -1326,6 +1346,7 @@ impl CPUSocket {
         None
     }
 
+    /// Returns current idle energy
     pub fn get_idle_power_microwatts(&self) -> Option<Record> {
         debug!("Inside idle power calculation function");
         if !self.idle_record_buffer.is_empty() {
@@ -1347,19 +1368,6 @@ impl CPUSocket {
         None
     }
 
-    /// Returns a new owned Vector being a clone of the current idle_record_buffer.
-    /// This does not affect the current buffer but is costly.
-    // fn get_idle_records_passive(&self) -> Vec<Record> {
-    //     let mut result = vec![];
-    //     for r in &self.idle_record_buffer {
-    //         result.push(Record::new(
-    //             r.timestamp,
-    //             r.value.clone(),
-    //             units::Unit::MicroJoule,
-    //         ));
-    //     }
-    //     result
-    // }
 
     /// Generates a new CPUStat object storing current usage statistics of the socket
     /// and stores it in the stat_buffer.

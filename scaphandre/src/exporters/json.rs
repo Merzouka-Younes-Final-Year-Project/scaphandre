@@ -148,11 +148,19 @@ struct Host {
     components: Components,
 }
 #[derive(Serialize, Deserialize)]
+struct Core {
+    id: usize,
+    consumption: f64,
+    timestamp: f64,
+}
+
+#[derive(Serialize, Deserialize)]
 struct Report {
     host: Host,
     idle: Option<f32>,
     consumers: Vec<Consumer>,
     sockets: Vec<Socket>,
+    cores: Vec<Core>,
 }
 
 impl Exporter for JsonExporter {
@@ -528,11 +536,31 @@ impl JsonExporter {
                     .find(|x| x.name == "scaph_host_idle_power_microwatts")
                     .and_then(|m| format!("{}", m.metric_value).parse::<f32>().ok());
 
+                let cores = self
+                    .metric_generator
+                    .topology
+                    .get_core_diff_power_microwatts()
+                    .map(|r| {
+                        r.values
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(id, v)| {
+                                v.parse::<f64>().ok().map(|consumption| Core {
+                                    id,
+                                    consumption,
+                                    timestamp: r.timestamp.as_secs_f64(),
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+
                 let report = Report {
                     host,
                     idle,
                     consumers: top_consumers,
                     sockets: all_sockets,
+                    cores,
                 };
 
                 // Serialize the report to json
