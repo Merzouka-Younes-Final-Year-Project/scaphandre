@@ -2,10 +2,10 @@
 #![no_main]
 
 use aya_ebpf::{
-    macros::{map, tracepoint},
+    macros::{map, perf_event, tracepoint},
     maps::PerCpuHashMap,
-    programs::TracePointContext,
-    helpers::bpf_ktime_get_ns,
+    programs::{PerfEventContext, TracePointContext},
+    helpers::{bpf_get_current_pid_tgid, bpf_ktime_get_ns},
 };
 
 const MAX_KEYS: u32 = 1024;
@@ -53,8 +53,8 @@ fn try_scaphandre(ctx: TracePointContext) -> Result<u32, u32> {
     let next_pid = args.next_pid as u32;
 
     // Accumulate time for the task that just got switched OFF the CPU
-    if let Some(last_ptr) = PID_LAST.get_ptr(prev_pid) {
-        let delta = now - unsafe { *last_ptr };
+    if let Some(last_timestamp) = PID_LAST.get_ptr(prev_pid) {
+        let delta = now - unsafe { *last_timestamp };
         if let Some(p_time) = PID_TIMES.get_ptr_mut(prev_pid) {
             unsafe { *p_time += delta };
         } else {
@@ -66,6 +66,20 @@ fn try_scaphandre(ctx: TracePointContext) -> Result<u32, u32> {
     let _ = PID_LAST.insert(next_pid, now, 0);
 
     Ok(0)
+}
+
+#[perf_event]
+pub fn sample_tick(_ctx: PerfEventContext) -> u32 {
+    let now = unsafe { bpf_ktime_get_ns() };
+    let pid = (bpf_get_current_pid_tgid() & 0xFFFF_FFFF) as u32;
+
+    if let Some(p) = PID_LAST.get_ptr_mut(pid) {
+        unsafe { *p = now };
+    } else {
+        let _ = PID_LAST.insert(pid, now, 0);
+    }
+
+    0
 }
 
 #[cfg(not(test))]
