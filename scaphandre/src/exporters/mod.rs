@@ -508,6 +508,25 @@ impl MetricGenerator {
                 });
             }
 
+            if let Some(cores) = self.topology.get_core_diff_power_microwatts() {
+                for (id, value) in cores.values.iter().enumerate() {
+                    let mut attributes = HashMap::new();
+                    attributes.insert("core_id".to_string(), id.to_string());
+                    self.data.push(Metric {
+                        name: String::from("scaph_host_core_power_microwatts"),
+                        metric_type: String::from("gauge"),
+                        ttl: 60.0,
+                        timestamp: cores.timestamp,
+                        hostname: self.hostname.clone(),
+                        state: String::from("ok"),
+                        tags: vec!["scaphandre".to_string()],
+                        attributes,
+                        description: String::from("Per-core power consumption in microwatts"),
+                        metric_value: MetricValueType::Text(value.clone()),
+                    });
+                }
+            }
+
         }
         if let Some(metric_value) = self.topology.get_load_avg() {
             self.data.push(Metric {
