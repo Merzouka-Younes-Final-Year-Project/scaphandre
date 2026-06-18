@@ -540,7 +540,11 @@ impl Topology {
             .iter()
             .map(|c| {
                 if let Some(metrics) = c.get_core_metrics_delta() {
+                    (
+                    1_f64 + metrics.active_percentage
+                ) * (
                     metrics.aperf as f64 * (metrics.aperf as f64 / metrics.mperf as f64)
+                )
                 } else {
                     0_f64
                 }
@@ -1291,7 +1295,7 @@ impl CPUSocket {
             cpu_cores: vec![], // cores are instantiated on a later step
             stat_buffer: vec![],
             sensor_data,
-            // idle_percentage_threshold: 0.975_f64,
+            // idle_percentage_threshold: 0.75_f64,
             idle_percentage_threshold: 0.85_f64,
         }
     }
@@ -1522,7 +1526,7 @@ impl CPUSocket {
             let last_rec_val = last_record.value.trim();
             debug!("socket : l1187 : trying to parse {} as u64", last_rec_val);
             let prev_rec_val = previous_record.value.trim();
-            debug!("socket : l1189 : trying to parse {} as u64", prev_rec_val);
+            debug!("socket : l118 : trying to parse {} as u64", prev_rec_val);
             if let (Ok(last_microjoules), Ok(previous_microjoules)) =
                 (last_rec_val.parse::<u64>(), prev_rec_val.parse::<u64>())
             {
@@ -1775,7 +1779,7 @@ impl CPUCore {
             let previous = self.record_buffer.get(self.record_buffer.len() - 2).unwrap();
             let mut res = CPUCoreMetrics{
                 average_frequency: 0,
-                active_percentage: 0,
+                active_percentage: 0_f64,
                 cpu_time_percentage: 0.0,
                 active_time: 0,
                 aperf: 0,
@@ -1789,7 +1793,7 @@ impl CPUCore {
                     .saturating_sub(previous.values[4].trim().parse::<u64>().unwrap_or(0));
 
                 res.active_percentage = if core_total_delta != 0 {
-                    (core_busy_delta as f64 / core_total_delta as f64 * 100.0) as u64
+                    core_busy_delta as f64 / core_total_delta as f64
                 } else {
                     0
                 };
@@ -2002,7 +2006,7 @@ pub struct MultiValuedRecord {
 #[derive(Debug, Clone)]
 pub struct CPUCoreMetrics {
     average_frequency: u64,
-    active_percentage: u64,
+    active_percentage: f64,
     cpu_time_percentage: f64,
     active_time: u64,
     aperf: u64,
