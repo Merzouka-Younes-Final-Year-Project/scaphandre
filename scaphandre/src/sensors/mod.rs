@@ -546,7 +546,7 @@ impl Topology {
                     (
                     1_f64 + metrics.active_percentage
                 ) * (
-                   metrics.aperf as f64 * (metrics.aperf as f64 / metrics.mperf as f64)
+                   (1_f64 + metrics.active_percentage) * (metrics.aperf as f64 / metrics.mperf as f64)
                 )
                 } else {
                     0_f64
