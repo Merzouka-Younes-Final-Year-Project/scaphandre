@@ -543,7 +543,7 @@ impl Topology {
             .iter()
             .map(|c| {
                 if let Some(metrics) = c.get_core_metrics_delta() {
-                  metrics.aperf as f64 
+                  metrics.inst
                 } else {
                     0_f64
                 }
