@@ -1188,7 +1188,7 @@ impl RecordGenerator for CPUSocket {
         }
 
         if let Some(record) = self.read_idle_record() {
-                self.idle_record_buffer.push(record);
+            self.idle_record_buffer.push(record);
         }
 
         if !self.record_buffer.is_empty() {
@@ -1295,8 +1295,8 @@ impl CPUSocket {
             cpu_cores: vec![], // cores are instantiated on a later step
             stat_buffer: vec![],
             sensor_data,
-            // idle_percentage_threshold: 0.75_f64,
-            idle_percentage_threshold: 0.85_f64,
+            // idle_percentage_threshold: 0.95_f64,
+            idle_percentage_threshold: 0.65_f64,
         }
     }
 
@@ -1344,8 +1344,13 @@ impl CPUSocket {
             if (idle as f64 / total as f64) >= self.idle_percentage_threshold {
                 if let Some(Ok(mut conso_core)) = self.get_records_diff_power_microwatts().map(|r| r.value.parse::<u64>()) {
                     if let Some(Ok(idle_conso)) = self.get_idle_power_microwatts().map(|r| r.value.parse::<u64>()) {
-                        conso_core = min(conso_core, idle_conso);
-                        debug!("Found Lower IDLE Consumption: {conso_core}");
+                        conso_core = if conso_core > 0_u64 {
+                            let min_conso = min(conso_core, idle_conso);
+                            debug!("Found Lower IDLE Consumption: {min_conso}");
+                            min_conso
+                        } else {
+                            idle_conso
+                        };
                     }
                     return Some(Record::new(
                         current_system_time_since_epoch(),
@@ -1362,17 +1367,14 @@ impl CPUSocket {
     pub fn get_idle_power_microwatts(&self) -> Option<Record> {
         debug!("Inside idle power calculation function");
         if !self.idle_record_buffer.is_empty() {
-            let consumptions = self.idle_record_buffer
-                .iter()
-                .flat_map(|r| r.value.parse::<u64>())
-                .collect::<Vec<u64>>();
+            let last = self.idle_record_buffer.iter().last();
 
-            if let Some(min_conso) = consumptions.iter().min() {
-                debug!("IDLE Consumption {min_conso}");
+            if let Some(last) = last {
+                debug!("IDLE Consumption {}", last.value);
                 return Some(Record::new(
                     current_system_time_since_epoch(),
-                    // ((consumptions.iter().sum::<u64>() as f64 / consumptions.len() as f64) as u64).to_string(),
-                    min_conso.to_string(),
+                    // read_idle_record either keeps the current power or goes lower
+                    last.value.clone(),
                     units::Unit::MicroWatt,
                 ));
             }
