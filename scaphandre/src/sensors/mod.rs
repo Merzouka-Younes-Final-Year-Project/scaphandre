@@ -993,7 +993,7 @@ impl Topology {
                             conso.parse::<f64>().unwrap_or(0_f64) * percentage
                         }).sum::<f64>()
                 }).unwrap_or(0_f64);
-                debug!("Simplified process {pid} energy {result}");
+                debug!("Simplified and correct process {pid} energy {result}");
                 debug!("EBPF Core percentage {} for process {pid} Power {result}", core_percentages.iter().map(|p| p.to_string()).collect::<Vec<String>>().join(", "));
                 res.insert(
                     String::from("scaph_process_power_consumption_microwatts"),
