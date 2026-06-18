@@ -543,11 +543,7 @@ impl Topology {
             .iter()
             .map(|c| {
                 if let Some(metrics) = c.get_core_metrics_delta() {
-                    (
-                    1_f64 + metrics.active_percentage
-                ) * (
-                   (1_f64 + metrics.active_percentage) * (metrics.aperf as f64 / metrics.mperf as f64)
-                )
+                  metrics.ipc 
                 } else {
                     0_f64
                 }
