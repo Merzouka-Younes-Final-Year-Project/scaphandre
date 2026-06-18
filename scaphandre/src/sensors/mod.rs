@@ -539,12 +539,12 @@ impl Topology {
     pub fn get_core_diff_power_microwatts(&self) -> Option<MultiValuedRecord> {
         let conso = self.get_records_diff_power_microwatts()
             .and_then(|r| r.value.parse::<f64>().ok()).unwrap_or(0_f64);
-        debug!("Using formula v_active_aperf_aperf_div_mperf");
+        debug!("Using formula v_inst_aperf_aperf_div_mperf");
         let coefs = self.get_cores()
             .iter()
             .map(|c| {
                 if let Some(metrics) = c.get_core_metrics_delta() {
-                  (1_f64 + metrics.active_percentage) * metrics.aperf as f64 * (metrics.aperf as f64 / metrics.mperf as f64)
+                  metrics.inst * metrics.aperf as f64 * (metrics.aperf as f64 / metrics.mperf as f64)
                 } else {
                     0_f64
                 }
