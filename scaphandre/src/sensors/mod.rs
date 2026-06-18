@@ -15,6 +15,7 @@ pub mod units;
 pub mod utils;
 #[cfg(target_os = "linux")]
 use procfs::{CpuInfo, CpuTime, KernelStats};
+use std::cell::RefCell;
 use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration, u64, vec};
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::FileExt;
@@ -23,6 +24,8 @@ use sysinfo::{CpuExt, Pid, System, SystemExt};
 use sysinfo::{DiskExt, DiskType, ProcessExt};
 use utils::{current_system_time_since_epoch, IProcess, ProcessTracker};
 use std::cmp::min;
+use perf_event::{Builder, Counter};
+use perf_event::events::Hardware;
 
 // !!!!!!!!!!!!!!!!! Sensor !!!!!!!!!!!!!!!!!!!!!!!
 /// Sensor trait, the Sensor API.
@@ -1588,7 +1591,7 @@ impl CPUSocket {
 /// owned by a CPUSocket. CPUCores are instanciated regardless if
 /// HyperThreading is activated on the host.
 /// Reprensents the processor field in /proc/cpuinfo.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CPUCore {
     pub id: u16,
     pub attributes: HashMap<String, String>,
@@ -1596,6 +1599,23 @@ pub struct CPUCore {
     pub record_buffer: Vec<MultiValuedRecord>,
     /// Maximum size of record_buffer in kilobytes
     pub buffer_max_kbytes: u16,
+    /// Counter for core instructions
+    instructions: Option<RefCell<Counter>>,
+    /// Counter for core cycles
+    cycles: Option<RefCell<Counter>>,
+}
+
+impl Clone for CPUCore {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            attributes: self.attributes.clone(),
+            record_buffer: self.record_buffer.clone(),
+            buffer_max_kbytes: self.buffer_max_kbytes,
+            instructions: None,
+            cycles: None,
+        }
+    }
 }
 
 impl MultiValuedRecordGenerator for CPUCore {
@@ -1720,6 +1740,18 @@ impl MultiValuedRecordReader for CPUCore {
                     })
                     .unwrap_or((0, 0, 0, 0));
 
+            let instr = self.instructions.as_ref().and_then(|c| c.borrow_mut().read_count_and_time().ok());
+            let cyc = self.cycles.as_ref().and_then(|c| c.borrow_mut().read_count_and_time().ok());
+
+            // Correct for multiplexing: if time_running < time_enabled, the kernel
+            // only scheduled the counter onto hardware for part of the interval.
+            let instr_scaled = instr.map(|instr| if instr.time_running > 0 {
+                instr.count as f64 * (instr.time_enabled as f64 / instr.time_running as f64)
+            } else { 0.0 }).unwrap_or(0.0);
+            let cyc_scaled = cyc.map(|cyc| if cyc.time_running > 0 {
+                cyc.count as f64 * (cyc.time_enabled as f64 / cyc.time_running as f64)
+            } else { 0.0 }).unwrap_or(0.0);
+
             Ok(MultiValuedRecord::new(
                 current_system_time_since_epoch(),
                 vec![
@@ -1730,11 +1762,15 @@ impl MultiValuedRecordReader for CPUCore {
                     core_total.to_string(),
                     node_busy.to_string(),
                     node_total.to_string(),
+                    instr_scaled.to_string(),
+                    cyc_scaled.to_string(),
                 ],
                 vec![
                     units::Unit::MicroSeconds,
                     units::Unit::Cycles,
                     units::Unit::Cycles,
+                    units::Unit::Numeric,
+                    units::Unit::Numeric,
                     units::Unit::Numeric,
                     units::Unit::Numeric,
                     units::Unit::Numeric,
@@ -1752,11 +1788,32 @@ impl MultiValuedRecordReader for CPUCore {
 impl CPUCore {
     /// Instantiates CPUCore and returns the instance.
     pub fn new(id: u16, attributes: HashMap<String, String>) -> CPUCore {
+
+        let cpu_id = id as usize;
+
+        let mut instructions = Builder::new(Hardware::INSTRUCTIONS)
+            .one_cpu(cpu_id)
+            .any_pid()
+            .build().ok();
+        let mut cycles = Builder::new(Hardware::CPU_CYCLES)
+            .one_cpu(cpu_id)
+            .any_pid()
+            .build().ok();
+
+        if let Some(ref mut i) = instructions {
+            let _ = i.enable();
+        }
+        if let Some(ref mut c) = cycles {
+            let _ = c.enable();
+        }
+
         CPUCore {
             id,
             attributes,
             record_buffer: vec![],
             buffer_max_kbytes: 1,
+            instructions: instructions.map(|inst| RefCell::new(inst)),
+            cycles: cycles.map(|cyc| RefCell::new(cyc)),
         }
     }
 
@@ -1786,9 +1843,12 @@ impl CPUCore {
                 active_time: 0,
                 aperf: 0,
                 mperf: 0,
+                inst: 0.0,
+                cyc: 0.0,
+                ipc: 0.0,
             };
 
-            if last.values.len() >= 7 && previous.values.len() >= 7 {
+            if last.values.len() >= 9 && previous.values.len() >= 9 {
                 let core_busy_delta = last.values[3].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[3].trim().parse::<u64>().unwrap_or(0));
                 let core_total_delta = last.values[4].trim().parse::<u64>().unwrap_or(0)
@@ -1832,6 +1892,14 @@ impl CPUCore {
                 } else {
                     0.0
                 };
+
+
+                res.inst = last.values[7].trim().parse::<f64>().unwrap_or(0.0) -
+                    previous.values[7].trim().parse::<f64>().unwrap_or(0.0);
+                res.cyc = last.values[8].trim().parse::<f64>().unwrap_or(0.0) - 
+                    previous.values[8].trim().parse::<f64>().unwrap_or(0.0);
+
+                res.ipc = if res.cyc > 0.0 { res.inst / res.cyc } else { 0.0 };
 
                 return Some(res);
             }
@@ -2013,6 +2081,9 @@ pub struct CPUCoreMetrics {
     active_time: u64,
     aperf: u64,
     mperf: u64,
+    inst: f64,
+    cyc: f64,
+    ipc: f64,
 }
 
 impl Record {
