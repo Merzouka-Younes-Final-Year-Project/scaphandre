@@ -1795,7 +1795,7 @@ impl CPUCore {
                 res.active_percentage = if core_total_delta != 0 {
                     core_busy_delta as f64 / core_total_delta as f64
                 } else {
-                    0
+                    0_f64
                 };
 
                 let aperf_delta = last.values[2].trim().parse::<u64>().unwrap_or(0)
