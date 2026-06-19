@@ -60,6 +60,9 @@ services:
       - type: bind
         source: "./dashboards/sample-dashboard.json"
         target: "/var/lib/grafana/dashboards/sample/sample-dashboard.json"
+      - type: bind
+        source: "./grafana/sample-dashboard.json"
+        target: "/var/lib/grafana/dashboards/sample-dashboard.json"
 
 volumes:
   promdata-scaphandre:
