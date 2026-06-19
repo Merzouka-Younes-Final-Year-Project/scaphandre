@@ -119,17 +119,37 @@
       "dashLength": 10,
       "dashes": false,
       "datasource": null,
-      "fieldConfig": { "defaults": { "custom": {} }, "overrides": [] },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
       "fill": 1,
       "fillGradient": 0,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
       "hiddenSeries": false,
       "id": 3,
-      "legend": { "avg": false, "current": false, "max": false, "min": false, "show": true, "total": false, "values": false },
+      "legend": {
+        "avg": false,
+        "current": false,
+        "max": false,
+        "min": false,
+        "show": true,
+        "total": false,
+        "values": false
+      },
       "lines": true,
       "linewidth": 1,
       "nullPointMode": "null",
-      "options": { "alertThreshold": true },
+      "options": {
+        "alertThreshold": true
+      },
       "percentage": false,
       "pluginVersion": "7.3.1",
       "pointradius": 2,
@@ -140,22 +160,59 @@
       "stack": false,
       "steppedLine": false,
       "targets": [
-        { "expr": "scaph_host_power_microwatts", "interval": "", "legendFormat": "host active", "refId": "A" },
-        { "expr": "scaph_host_idle_power_microwatts", "interval": "", "legendFormat": "host idle", "refId": "B" }
+        {
+          "expr": "scaph_host_power_microwatts",
+          "interval": "",
+          "legendFormat": "host active",
+          "refId": "A"
+        },
+        {
+          "expr": "scaph_host_idle_power_microwatts",
+          "interval": "",
+          "legendFormat": "host idle",
+          "refId": "B"
+        }
       ],
       "thresholds": [],
       "timeFrom": null,
       "timeRegions": [],
       "timeShift": null,
       "title": "Host Power (microwatts)",
-      "tooltip": { "shared": true, "sort": 0, "value_type": "individual" },
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
       "type": "graph",
-      "xaxis": { "buckets": null, "mode": "time", "name": null, "show": true, "values": [] },
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
       "yaxes": [
-        { "format": "short", "label": "microwatts", "logBase": 1, "max": null, "min": null, "show": true },
-        { "format": "short", "label": null, "logBase": 1, "max": null, "min": null, "show": true }
+        {
+          "format": "short",
+          "label": "microwatts",
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        },
+        {
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
       ],
-      "yaxis": { "align": false, "alignLevel": null }
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
     },
     {
       "aliasColors": {},
@@ -163,17 +220,37 @@
       "dashLength": 10,
       "dashes": false,
       "datasource": null,
-      "fieldConfig": { "defaults": { "custom": {} }, "overrides": [] },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
       "fill": 1,
       "fillGradient": 0,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
       "hiddenSeries": false,
       "id": 4,
-      "legend": { "avg": false, "current": false, "max": false, "min": false, "show": true, "total": false, "values": false },
+      "legend": {
+        "avg": false,
+        "current": false,
+        "max": false,
+        "min": false,
+        "show": true,
+        "total": false,
+        "values": false
+      },
       "lines": true,
       "linewidth": 1,
       "nullPointMode": "null",
-      "options": { "alertThreshold": true },
+      "options": {
+        "alertThreshold": true
+      },
       "percentage": false,
       "pluginVersion": "7.3.1",
       "pointradius": 2,
@@ -184,22 +261,59 @@
       "stack": false,
       "steppedLine": false,
       "targets": [
-        { "expr": "scaph_socket_power_microwatts", "interval": "", "legendFormat": "socket {{socket_id}} active", "refId": "A" },
-        { "expr": "scaph_socket_idle_power_microwatts", "interval": "", "legendFormat": "socket {{socket_id}} idle", "refId": "B" }
+        {
+          "expr": "scaph_socket_power_microwatts",
+          "interval": "",
+          "legendFormat": "socket {{socket_id}} active",
+          "refId": "A"
+        },
+        {
+          "expr": "scaph_socket_idle_power_microwatts",
+          "interval": "",
+          "legendFormat": "socket {{socket_id}} idle",
+          "refId": "B"
+        }
       ],
       "thresholds": [],
       "timeFrom": null,
       "timeRegions": [],
       "timeShift": null,
       "title": "Socket Power (microwatts)",
-      "tooltip": { "shared": true, "sort": 0, "value_type": "individual" },
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
       "type": "graph",
-      "xaxis": { "buckets": null, "mode": "time", "name": null, "show": true, "values": [] },
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
       "yaxes": [
-        { "format": "short", "label": "microwatts", "logBase": 1, "max": null, "min": null, "show": true },
-        { "format": "short", "label": null, "logBase": 1, "max": null, "min": null, "show": true }
+        {
+          "format": "short",
+          "label": "microwatts",
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        },
+        {
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
       ],
-      "yaxis": { "align": false, "alignLevel": null }
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
     },
     {
       "aliasColors": {},
@@ -207,17 +321,37 @@
       "dashLength": 10,
       "dashes": false,
       "datasource": null,
-      "fieldConfig": { "defaults": { "custom": {} }, "overrides": [] },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      },
       "fill": 1,
       "fillGradient": 0,
-      "gridPos": { "h": 8, "w": 20, "x": 0, "y": 25 },
+      "gridPos": {
+        "h": 8,
+        "w": 20,
+        "x": 0,
+        "y": 25
+      },
       "hiddenSeries": false,
       "id": 5,
-      "legend": { "avg": false, "current": false, "max": false, "min": false, "show": true, "total": false, "values": false },
+      "legend": {
+        "avg": false,
+        "current": false,
+        "max": false,
+        "min": false,
+        "show": true,
+        "total": false,
+        "values": false
+      },
       "lines": true,
       "linewidth": 1,
       "nullPointMode": "null",
-      "options": { "alertThreshold": true },
+      "options": {
+        "alertThreshold": true
+      },
       "percentage": false,
       "pluginVersion": "7.3.1",
       "pointradius": 2,
@@ -228,21 +362,53 @@
       "stack": false,
       "steppedLine": false,
       "targets": [
-        { "expr": "scaph_host_core_power_microwatts", "interval": "", "legendFormat": "core {{core_id}}", "refId": "A" }
+        {
+          "expr": "scaph_host_core_power_microwatts",
+          "interval": "",
+          "legendFormat": "core {{core_id}}",
+          "refId": "A"
+        }
       ],
       "thresholds": [],
       "timeFrom": null,
       "timeRegions": [],
       "timeShift": null,
       "title": "Per-Core Power (microwatts)",
-      "tooltip": { "shared": true, "sort": 0, "value_type": "individual" },
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
       "type": "graph",
-      "xaxis": { "buckets": null, "mode": "time", "name": null, "show": true, "values": [] },
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
       "yaxes": [
-        { "format": "short", "label": "microwatts", "logBase": 1, "max": null, "min": null, "show": true },
-        { "format": "short", "label": null, "logBase": 1, "max": null, "min": null, "show": true }
+        {
+          "format": "short",
+          "label": "microwatts",
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        },
+        {
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
       ],
-      "yaxis": { "align": false, "alignLevel": null }
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
     }
   ],
   "schemaVersion": 26,
@@ -259,5 +425,6 @@
   "timezone": "",
   "title": "Scaphandre",
   "uid": null,
-  "version": 0
+  "version": 0,
+  "refresh": "5s"
 }
