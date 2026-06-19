@@ -60,7 +60,8 @@ fn try_scaphandre(ctx: TracePointContext) -> Result<u32, u32> {
             unsafe { *p_time += delta };
         } else {
             let _ = PID_TIMES.insert(prev_pid, delta, 0);
-        }
+        };
+        let _ = PID_LAST.remove(prev_pid);
     }
 
     // Record when the incoming task got switched ON
