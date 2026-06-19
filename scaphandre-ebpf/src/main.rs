@@ -8,6 +8,7 @@ use aya_ebpf::{
     helpers::{bpf_get_current_pid_tgid, bpf_ktime_get_ns},
 };
 
+// TODO: Update to proper max keys
 const MAX_KEYS: u32 = 1024;
 
 /// Layout from /sys/kernel/debug/tracing/events/sched/sched_switch/format
