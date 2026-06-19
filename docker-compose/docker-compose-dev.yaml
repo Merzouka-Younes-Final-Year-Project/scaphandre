@@ -6,11 +6,7 @@ services:
     container_name: scaphandre
     build:
       context: ..
-    cap_add:
-      - CAP_BPF
-      - CAP_PERFMON
-      - CAP_SYS_ADMIN
-      - CAP_NET_ADMIN
+    privileged: true
     ports:
       - "8089:8080"
     volumes:
