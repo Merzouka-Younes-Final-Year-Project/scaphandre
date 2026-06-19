@@ -21,11 +21,7 @@ services:
 
   scaphandre:
     image: scaphandre
-    cap_add:
-      - CAP_BPF
-      - CAP_PERFMON
-      - CAP_SYS_ADMIN
-      - CAP_NET_ADMIN
+    privileged: true
     ports:
       - "8080:8080"
     volumes:
