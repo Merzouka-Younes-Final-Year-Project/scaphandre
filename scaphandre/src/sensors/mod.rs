@@ -1728,7 +1728,7 @@ impl CPUSocket {
             {
                 let mut microjoules = 0;
                 if last_microjoules >= previous_microjoules {
-                    microjoules = last_microjoules - previous_microjoules;
+                    microjoules = last_microjoules.saturating_sub(previous_microjoules);
                 } else {
                     debug!(
                         "socket: previous_microjoules ({}) > last_microjoules ({})",
