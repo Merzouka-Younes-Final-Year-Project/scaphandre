@@ -1,8 +1,7 @@
 use aya::{
     maps::{MapData, RingBuf},
     programs::{
-        perf_event::{PerfEvent, PerfEventConfig, PerfEventScope, SamplePolicy, SoftwareEvent},
-        TracePoint,
+        TracePoint, perf_event::{PerfEvent, PerfEventConfig, PerfEventScope, SamplePolicy, SoftwareEvent}
     },
     util::online_cpus,
 };

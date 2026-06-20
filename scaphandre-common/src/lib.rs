@@ -10,5 +10,6 @@ pub enum CpuEventType {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CpuStateEvent {
+    pub socket_id: u16,
     pub event_type: CpuEventType,
 }

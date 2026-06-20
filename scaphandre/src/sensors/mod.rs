@@ -6,7 +6,7 @@
 #[cfg(target_os = "windows")]
 pub mod msr_rapl;
 use aya::Ebpf;
-use aya::maps::{MapData, RingBuf};
+use aya::maps::{Array, MapData, RingBuf};
 use docker_sync::network;
 #[cfg(target_os = "windows")]
 use msr_rapl::get_msr_value;
@@ -16,15 +16,18 @@ pub mod units;
 pub mod utils;
 #[cfg(target_os = "linux")]
 use procfs::{CpuInfo, CpuTime, KernelStats};
+use protobuf::Clear;
+use scaphandre_common::{CpuEventType, CpuStateEvent};
+use time::unit::Unit;
 use std::cell::RefCell;
-use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration, u64, vec};
+use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration, vec};
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::FileExt;
 #[allow(unused_imports)]
 use sysinfo::{CpuExt, Pid, System, SystemExt};
 use sysinfo::{DiskExt, DiskType, ProcessExt};
 use utils::{current_system_time_since_epoch, IProcess, ProcessTracker};
-use std::cmp::min;
+use std::cmp::{max, min};
 use perf_event::{Builder, Counter};
 use perf_event::events::Hardware;
 
@@ -62,7 +65,6 @@ pub trait RecordReader {
 /// from the electricity consumption point of view,
 /// including the potentially multiple CPUSocket sockets.
 /// Owns a vector of CPUSocket structs representing each socket.
-#[derive(Debug)]
 pub struct Topology {
     /// The CPU sockets found on the host, represented as CPUSocket instances attached to this topology
     pub sockets: Vec<CPUSocket>,
@@ -82,6 +84,24 @@ pub struct Topology {
     pub ebpf: Option<Ebpf>,
     /// Ring buffer receiving CpuStateEvents from the cpu_state_tick eBPF program
     pub cpu_state_buffer: Option<RingBuf<MapData>>,
+    /// Ring buffer per socket event buffer
+    pub activation_idle_buffer: HashMap<u16, Vec<CpuStateEvent>>,
+}
+
+impl std::fmt::Debug for Topology {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Topology")
+            .field("sockets", &self.sockets)
+            .field("proc_tracker", &self.proc_tracker)
+            .field("stat_buffer", &self.stat_buffer)
+            .field("record_buffer", &self.record_buffer)
+            .field("buffer_max_kbytes", &self.buffer_max_kbytes)
+            .field("domains_names", &self.domains_names)
+            .field("_sensor_data", &self._sensor_data)
+            .field("ebpf", &self.ebpf)
+            .field("cpu_state_buffer", &self.cpu_state_buffer.as_ref().map(|_| "eBPF Ring Buffer"))
+            .finish()
+    }
 }
 
 impl RecordGenerator for Topology {
@@ -173,6 +193,7 @@ impl Clone for Topology {
             _sensor_data: self._sensor_data.clone(),
             ebpf: None, // Ebpf handles cannot be cloned; cloned topologies won't track eBPF data
             cpu_state_buffer: None,
+            activation_idle_buffer: self.activation_idle_buffer.clone(),
         }
     }
 }
@@ -181,7 +202,13 @@ impl Topology {
     /// Instanciates Topology and returns the instance
     pub fn new(sensor_data: HashMap<String, String>) -> Topology {
         let mut ebpf = crate::bpf::load().ok();
-        let cpu_state_buffer = ebpf.as_mut().and_then(|e| crate::bpf::take_cpu_state_buffer(e));
+        #[cfg(target_os = "linux")]
+        if let Some(ebpf) = ebpf.as_mut() {
+            if let Err(e) = populate_cpu_to_socket_map(ebpf) {
+                warn!("Failed to initialize CPU_TO_SOCKET eBPF map: {e}");
+            }
+        }
+        let cpu_state_buffer = ebpf.as_mut().and_then(crate::bpf::take_cpu_state_buffer);
         Topology {
             sockets: vec![],
             proc_tracker: ProcessTracker::new(5, ebpf.as_mut()),
@@ -192,6 +219,7 @@ impl Topology {
             _sensor_data: sensor_data,
             ebpf,
             cpu_state_buffer,
+            activation_idle_buffer: HashMap::new()
         }
     }
 
@@ -370,6 +398,52 @@ impl Topology {
             }
         }
     }
+
+    /// Refresh socket activation and idle events
+    fn refresh_activation_idle_records(&mut self) {
+        if let Some(ref mut buffer) = self.cpu_state_buffer {
+            for e in crate::bpf::drain_cpu_state_events(buffer) {
+                self.activation_idle_buffer.entry(e.socket_id).or_insert(vec![]).push(e);
+            }
+        }
+    }
+
+    /// Return and clear socket activation and idle records
+    fn get_activation_idle_records(&mut self, socket: u16) -> Vec<CpuStateEvent> {
+        self.activation_idle_buffer.remove(&socket).unwrap_or_default()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn populate_cpu_to_socket_map(ebpf: &mut Ebpf) -> Result<(), Box<dyn Error>> {
+    let map = ebpf.map_mut("CPU_TO_SOCKET").ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "CPU_TO_SOCKET eBPF map not found",
+        )
+    })?;
+    let mut cpu_to_socket: Array<_, u16> = Array::try_from(map)?;
+    let map_len = cpu_to_socket.len();
+
+    for cpu in aya::util::online_cpus().map_err(|(_, e)| e)? {
+        if cpu >= map_len {
+            warn!("Skipping CPU {cpu}: CPU_TO_SOCKET eBPF map only has {map_len} entries");
+            continue;
+        }
+
+        let socket = read_physical_package_id(cpu)?;
+        // This is so the kernel space code can know when to do the available CPU stop, so socket 0
+        // -> #1
+        cpu_to_socket.set(cpu, socket + 1, 0)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn read_physical_package_id(cpu: u32) -> Result<u16, Box<dyn Error>> {
+    let path = format!("/sys/devices/system/cpu/cpu{cpu}/topology/physical_package_id");
+    Ok(fs::read_to_string(path)?.trim().parse()?)
 }
 
 // Placeholder for now to avoid duplicate code structure issues
@@ -414,9 +488,17 @@ impl Topology {
     /// and power consumption, CPU stats and cores power comsumption,
     /// CPU sockets stats and power consumption.
     pub fn refresh(&mut self) {
-        let sockets = &mut self.sockets;
-        for s in sockets {
+        // IMPORTANT: This should go first because sockets use its result
+        self.refresh_activation_idle_records();
+        // Collect per-socket records before mutably borrowing sockets
+        let socket_ids: Vec<u16> = self.sockets.iter().map(|s| s.id).collect();
+        let idle_records: Vec<Vec<CpuStateEvent>> = socket_ids
+            .iter()
+            .map(|&id| self.get_activation_idle_records(id))
+            .collect();
+        for (s, records) in self.sockets.iter_mut().zip(idle_records) {
             // refresh each socket with new record
+            s.refresh_activation_idle_records(records);
             s.refresh_record();
             s.refresh_stats();
             let domains = s.get_domains();
@@ -497,14 +579,32 @@ impl Topology {
         }
     }
 
+   /// Returns the current idle power for the entire host 
     pub fn get_idle_power_microwatts(&self) -> Option<Record> {
         let mut total = 0_u64;
         for s in &self.sockets {
-            if let Some(Ok(idle)) = s.get_idle_power_microwatts().map(|r| r.value.parse::<u64>()) {
+            if let Some(idle) = s.get_idle_power_microwatts().as_ref().and_then(|r| r.value.parse::<u64>().ok()) {
                 total += idle;
             }
         }
         debug!("Topology IDLE: {total}");
+
+        Some(Record::new(
+            current_system_time_since_epoch(),
+            total.to_string(),
+            units::Unit::MicroWatt,
+        ))
+    }
+
+   /// Returns the current activation power for the entire host 
+    pub fn get_activation_power_microwatts(&self) -> Option<Record> {
+        let mut total = 0_u64;
+        for s in &self.sockets {
+            if let Some(idle) = s.get_activation_power_microwatts().as_ref().and_then(|r| r.value.parse::<u64>().ok()) {
+                total += idle;
+            }
+        }
+        debug!("Topology ACTIVATION: {total}");
 
         Some(Record::new(
             current_system_time_since_epoch(),
@@ -571,17 +671,33 @@ impl Topology {
         ))
     }
 
+    fn get_background_power_microwatts(&self) -> Option<Record> {
+        let idle = self.get_idle_power_microwatts()
+            .as_ref()
+            .and_then(|r| r.value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let activation = self.get_activation_power_microwatts()
+            .as_ref()
+            .and_then(|r| r.value.parse::<u64>().ok())
+            .unwrap_or(0);
+        Some(Record::new(
+            current_system_time_since_epoch(),
+            max(idle, activation).to_string(),
+            units::Unit::MicroWatt,
+        ))
+    }
+
     /// Returns a Record instance containing the power consumed between
     /// last and previous measurement, in microwatts.
     pub fn get_records_diff_power_microwatts(&self) -> Option<Record> {
         if self.record_buffer.len() > 1 {
-            let idle_conso = self
-                .get_idle_power_microwatts()
+            let background_conso = self
+                .get_background_power_microwatts()
                 .map(|r| r.value.parse::<u64>())
                 .unwrap_or(Ok(0))
                 .unwrap_or(0);
 
-            debug!("Total IDLE power Diff: {idle_conso}");
+            debug!("Total BACKGROUND power Diff: {background_conso}");
 
             let last_record = self.record_buffer.last().unwrap();
             let previous_record = self
@@ -600,7 +716,7 @@ impl Topology {
                         let microwatts = microjoules as f64 / time_diff;
                         return Some(Record::new(
                             last_record.timestamp,
-                            (microwatts as u64).saturating_sub(idle_conso).to_string(),
+                            (microwatts as u64).saturating_sub(background_conso).to_string(),
                             units::Unit::MicroWatt,
                         ));
                     }
@@ -1164,7 +1280,7 @@ pub struct CPUSocket {
     pub buffer_max_kbytes: u16,
 
     /// Idle comsumption records measured and stored by scaphandre for this socket.
-    pub idle_record_buffer: Vec<Record>,
+    pub activation_idle_record_buffer: Vec<MultiValuedRecord>,
 
     /// CPU cores (core_id in /proc/cpuinfo) attached to the socket.
     pub cpu_cores: Vec<CPUCore>,
@@ -1197,9 +1313,6 @@ impl RecordGenerator for CPUSocket {
             }
         }
 
-        if let Some(record) = self.read_idle_record() {
-            self.idle_record_buffer.push(record);
-        }
 
         if !self.record_buffer.is_empty() {
             self.clean_old_records();
@@ -1237,9 +1350,9 @@ impl RecordGenerator for CPUSocket {
             }
         }
 
-        if !self.idle_record_buffer.is_empty() {
-            let idle_record_ptr = &self.idle_record_buffer[0];
-            let idle_curr_size = size_of_val(idle_record_ptr) * self.idle_record_buffer.len();
+        if !self.activation_idle_record_buffer.is_empty() {
+            let idle_record_ptr = &self.activation_idle_record_buffer[0];
+            let idle_curr_size = size_of_val(idle_record_ptr) * self.activation_idle_record_buffer.len();
             trace!(
                 "socket idle record buffer current size: {} max_bytes: {}",
                 idle_curr_size,
@@ -1256,8 +1369,8 @@ impl RecordGenerator for CPUSocket {
                     let nb_records_to_delete =
                         size_diff as f32 / size_of_val(idle_record_ptr) as f32;
                     for _ in 1..nb_records_to_delete as u32 {
-                        if !self.idle_record_buffer.is_empty() {
-                            let res = self.idle_record_buffer.remove(0);
+                        if !self.activation_idle_record_buffer.is_empty() {
+                            let res = self.activation_idle_record_buffer.remove(0);
                             debug!(
                                 "Cleaning socket id {} idle records buffer, removing: {}",
                                 self.id, res
@@ -1301,7 +1414,7 @@ impl CPUSocket {
             counter_uj_path,
             record_buffer: vec![], // buffer has to be empty first
             buffer_max_kbytes,
-            idle_record_buffer: vec![],
+            activation_idle_record_buffer: vec![],
             cpu_cores: vec![], // cores are instantiated on a later step
             stat_buffer: vec![],
             sensor_data,
@@ -1346,28 +1459,57 @@ impl CPUSocket {
         self.cpu_cores.push(core);
     }
 
+    /// Refreshes activation and idle records
+    fn refresh_activation_idle_records(&mut self, records: Vec<CpuStateEvent>) {
+        if let Some(record) = self.read_activation_idle_record(records) {
+            self.activation_idle_record_buffer.push(record);
+        }
+    }
+
     /// Reads a new record for socket-level idle energy
-    pub fn read_idle_record(&self) -> Option<Record> {
-        if let Some(stat) = self.get_stats_diff() {
-            let (idle, total) = stat.get_idle_and_total();
-            debug!("CPUSocket {} idle percentage {}", self.id, idle as f64 / total as f64);
-            if (idle as f64 / total as f64) >= self.idle_percentage_threshold {
-                if let Some(Ok(mut conso_core)) = self.get_records_diff_power_microwatts().map(|r| r.value.parse::<u64>()) {
-                    if let Some(Ok(idle_conso)) = self.get_idle_power_microwatts().map(|r| r.value.parse::<u64>()) {
-                        conso_core = if conso_core > 0_u64 {
-                            let min_conso = min(conso_core, idle_conso);
-                            debug!("Found Lower IDLE Consumption: {min_conso}");
-                            min_conso
-                        } else {
-                            idle_conso
+    pub fn read_activation_idle_record(&self, records: Vec<CpuStateEvent>) -> Option<MultiValuedRecord> {
+        let idle_rec_exists = records.iter().any(|r| r.event_type == CpuEventType::IdleEvent);
+        let activation_rec_exists = records.iter().any(|r| r.event_type == CpuEventType::ActivationEvent);
+        if idle_rec_exists || activation_rec_exists {
+            if let Some(current) = self.get_records_diff_power_microwatts()
+                .as_ref()
+                .and_then(|r| r.value.parse::<u64>().ok()) {
+                let mut idle = self.get_idle_power_microwatts()
+                    .as_ref()
+                    .and_then(|r| r.value.parse::<u64>().ok())
+                    .unwrap_or(0);
+
+                if idle_rec_exists {
+                    idle = if idle != 0 {
+                        min(current, idle)
+                    } else {
+                            current
                         };
-                    }
-                    return Some(Record::new(
-                        current_system_time_since_epoch(),
-                        conso_core.to_string(),
-                        units::Unit::MicroWatt,
-                    ));
                 }
+
+                let mut activation = self.get_activation_power_microwatts()
+                    .as_ref()
+                    .and_then(|r| r.value.parse::<u64>().ok())
+                    .unwrap_or(0);
+
+                if activation_rec_exists {
+                    activation = if activation != 0 {
+                        min(current, activation)
+                    } else {
+                        current
+                    };
+                };
+                return Some(MultiValuedRecord::new(
+                    current_system_time_since_epoch(),
+                    vec![
+                        idle.to_string(),
+                        activation.to_string(),
+                    ],
+                    vec![
+                        units::Unit::MicroWatt,
+                        units::Unit::MicroWatt,
+                    ]
+                ));
             }
         }
         None
@@ -1376,22 +1518,47 @@ impl CPUSocket {
     /// Returns current idle energy
     pub fn get_idle_power_microwatts(&self) -> Option<Record> {
         debug!("Inside idle power calculation function");
-        if !self.idle_record_buffer.is_empty() {
-            let last = self.idle_record_buffer.iter().last();
+        if !self.activation_idle_record_buffer.is_empty() {
+            let last = self.activation_idle_record_buffer.iter().last();
 
             if let Some(last) = last {
-                debug!("IDLE Consumption {}", last.value);
-                return Some(Record::new(
-                    current_system_time_since_epoch(),
-                    // read_idle_record either keeps the current power or goes lower
-                    last.value.clone(),
-                    units::Unit::MicroWatt,
-                ));
+                if last.values.len() >= 2 {
+                    let val = last.values[0].clone();
+                    debug!("IDLE Consumption {}", &val);
+                    return Some(Record::new(
+                        current_system_time_since_epoch(),
+                        // read_idle_record either keeps the current power or goes lower
+                        val,
+                        units::Unit::MicroWatt,
+                    ));
+                }
             }
         }
         None
     }
 
+
+    /// Returns current activation energy
+    pub fn get_activation_power_microwatts(&self) -> Option<Record> {
+        debug!("Inside activation power calculation function");
+        if !self.activation_idle_record_buffer.is_empty() {
+            let last = self.activation_idle_record_buffer.iter().last();
+
+            if let Some(last) = last {
+                if last.values.len() >= 2 {
+                    let val = last.values[1].clone();
+                    debug!("ACTIVATION Consumption {}", &val);
+                    return Some(Record::new(
+                        current_system_time_since_epoch(),
+                        // read_activation_idle_record either keeps the current power or goes lower
+                        val,
+                        units::Unit::MicroWatt,
+                    ));
+                }
+            }
+        }
+        None
+    }
 
     /// Generates a new CPUStat object storing current usage statistics of the socket
     /// and stores it in the stat_buffer.
@@ -1522,6 +1689,23 @@ impl CPUSocket {
         None
     }
 
+    /// Returns the background power (max of idle and activation) for this socket
+    pub fn get_background_power_microwatts(&self) -> Option<Record> {
+        let idle = self.get_idle_power_microwatts()
+            .as_ref()
+            .and_then(|r| r.value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let activation = self.get_activation_power_microwatts()
+            .as_ref()
+            .and_then(|r| r.value.parse::<u64>().ok())
+            .unwrap_or(0);
+        Some(Record::new(
+            current_system_time_since_epoch(),
+            max(idle, activation).to_string(),
+            units::Unit::MicroWatt,
+        ))
+    }
+
     /// Returns a Record instance containing the power consumed between last
     /// and previous measurement, for this CPU socket
     pub fn get_records_diff_power_microwatts(&self) -> Option<Record> {
@@ -1558,13 +1742,12 @@ impl CPUSocket {
                 debug!("Calculating Socket with IDLE.");
                 return Some(Record::new(
                     last_record.timestamp,
-                    (
-                        (microwatts as u64)
-                            .saturating_sub(self
-                                .get_idle_power_microwatts()
-                                .map(|r| r.value.parse::<u64>().unwrap_or(0))
+                    (microwatts as u64)
+                        .saturating_sub(
+                            self.get_background_power_microwatts()
+                                .and_then(|r| r.value.parse::<u64>().ok())
                                 .unwrap_or(0)
-                            )).to_string(),
+                        ).to_string(),
                     units::Unit::MicroWatt,
                 ));
             }

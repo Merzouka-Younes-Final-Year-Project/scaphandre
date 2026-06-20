@@ -10,7 +10,8 @@ use scaphandre_common::{CpuEventType, CpuStateEvent};
 
 // TODO: Update to proper max keys
 const MAX_KEYS: u32 = 1024;
-const MAX_CPU: u32 = 128;
+const MAX_CPU: u32 = 256;
+const MAX_SOCKET: u16 = 64;
 
 /// Layout from /sys/kernel/debug/tracing/events/sched/sched_switch/format
 /// prev_state is i64 on kernels >= 5.14, i32 on older ones.
@@ -45,6 +46,9 @@ static CPU_SNAPSHOT: Array<u64> = Array::with_max_entries(MAX_CPU, 0);
 /// Ring buffer for CPU state events consumed by userspace. 256 KB.
 #[map]
 static CPU_STATE_EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
+
+#[map]
+static CPU_TO_SOCKET: Array<u16> = Array::with_max_entries(MAX_CPU, 0);
 
 #[tracepoint]
 pub fn scaphandre(ctx: TracePointContext) -> u32 {
@@ -112,41 +116,56 @@ pub fn sample_tick(_ctx: PerfEventContext) -> u32 {
 /// Fires every 10 ms. TODO: implement idle/active state event emission.
 #[perf_event]
 pub fn cpu_state_tick(_ctx: PerfEventContext) -> u32 {
-    let mut idle = true;
-    let mut active_cpus = 0;
+    let mut socket_active_cpus: [u32; MAX_SOCKET as usize] = [0; MAX_SOCKET as usize];
     for cpu in 0..MAX_CPU {
         if let Some(old) = CPU_SNAPSHOT.get(cpu) {
             if let Some(new) = CPU_TIME.get(cpu) {
-                if new - old != 0 {
-                    idle = false;
-                    active_cpus += 1;
-                }
-                if active_cpus >= 2 {
-                    break;
+                if let Some(socket) = CPU_TO_SOCKET.get(cpu) {
+                    // This is so we can know if we have reached the end of the current system's
+                    // CPUs userspace code starts socket ids from 1
+                    if (*socket) == 0 {
+                        break;
+                    }
+                    if let Some(active_cpus) = socket_active_cpus.get_mut((*socket as usize).saturating_sub(1)) {
+                        if new - old != 0 {
+                            *active_cpus += 1;
+                        }
+                    }
                 }
             }
         }
     }
 
-    if idle {
-        if let Some(mut entry) = CPU_STATE_EVENTS.reserve::<CpuStateEvent>(0) {
-            unsafe {
-                (*entry.as_mut_ptr()) = CpuStateEvent { 
-                    event_type: CpuEventType::IdleEvent,
-                };
+    for socket in 0..MAX_SOCKET {
+        let active_cpus = socket_active_cpus[socket as usize];
+        if active_cpus == 0 {
+            if let Some(mut entry) = CPU_STATE_EVENTS.reserve::<CpuStateEvent>(0) {
+                unsafe {
+                    (*entry.as_mut_ptr()) = CpuStateEvent { 
+                        socket_id: socket,
+                        event_type: CpuEventType::IdleEvent,
+                    };
+                }
+                entry.submit(0);
             }
-            entry.submit(0);
+        } else {
+            if active_cpus == 1 {
+                if let Some(mut entry) = CPU_STATE_EVENTS.reserve::<CpuStateEvent>(0) {
+                    unsafe {
+                        (*entry.as_mut_ptr()) = CpuStateEvent { 
+                            socket_id: socket,
+                            event_type: CpuEventType::ActivationEvent,
+                        };
+                    }
+                    entry.submit(0);
+                }
+            }
         }
     }
 
-    if active_cpus == 1 {
-        if let Some(mut entry) = CPU_STATE_EVENTS.reserve::<CpuStateEvent>(0) {
-            unsafe {
-                (*entry.as_mut_ptr()) = CpuStateEvent { 
-                    event_type: CpuEventType::ActivationEvent,
-                };
-            }
-            entry.submit(0);
+    for cpu in 0..MAX_CPU {
+        if let Some(c_time) = CPU_TIME.get(cpu) {
+            let _ = CPU_SNAPSHOT.set(cpu, c_time, 0);
         }
     }
 
