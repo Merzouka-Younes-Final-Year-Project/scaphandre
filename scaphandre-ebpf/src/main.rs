@@ -6,6 +6,7 @@ use aya_ebpf::{
     maps::{Array, PerCpuHashMap, RingBuf},
     programs::{PerfEventContext, TracePointContext}
 };
+use aya_log_ebpf::info;
 use scaphandre_common::{CpuEventType, CpuStateEvent};
 
 // TODO: Update to proper max keys
@@ -116,7 +117,7 @@ pub fn sample_tick(_ctx: PerfEventContext) -> u32 {
 /// Fires every 10 ms. TODO: implement idle/active state event emission.
 #[perf_event]
 pub fn cpu_state_tick(_ctx: PerfEventContext) -> u32 {
-    let mut socket_active_cpus: [u32; MAX_SOCKET as usize] = [0; MAX_SOCKET as usize];
+    let mut socket_active_cpus: [u32; MAX_SOCKET as usize] = [u32::MAX; MAX_SOCKET as usize];
     for cpu in 0..MAX_CPU {
         if let Some(old) = CPU_SNAPSHOT.get(cpu) {
             if let Some(new) = CPU_TIME.get(cpu) {
@@ -127,6 +128,9 @@ pub fn cpu_state_tick(_ctx: PerfEventContext) -> u32 {
                         break;
                     }
                     if let Some(active_cpus) = socket_active_cpus.get_mut((*socket as usize).saturating_sub(1)) {
+                        if *active_cpus == u32::MAX {
+                            *active_cpus = 0;
+                        }
                         if new - old != 0 {
                             *active_cpus += 1;
                         }
@@ -138,6 +142,9 @@ pub fn cpu_state_tick(_ctx: PerfEventContext) -> u32 {
 
     for socket in 0..MAX_SOCKET {
         let active_cpus = socket_active_cpus[socket as usize];
+        if active_cpus == u32::MAX {
+            break;
+        }
         if active_cpus == 0 {
             if let Some(mut entry) = CPU_STATE_EVENTS.reserve::<CpuStateEvent>(0) {
                 unsafe {

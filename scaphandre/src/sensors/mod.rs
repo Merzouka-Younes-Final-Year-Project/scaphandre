@@ -604,7 +604,6 @@ impl Topology {
                 total += idle;
             }
         }
-        debug!("Topology ACTIVATION: {total}");
 
         Some(Record::new(
             current_system_time_since_epoch(),
@@ -1499,6 +1498,8 @@ impl CPUSocket {
                         current
                     };
                 };
+
+                debug!("Adding new ACVTIVATION IDLE Record: activation={activation}, idle={idle}");
                 return Some(MultiValuedRecord::new(
                     current_system_time_since_epoch(),
                     vec![
