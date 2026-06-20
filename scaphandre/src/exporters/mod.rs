@@ -508,6 +508,36 @@ impl MetricGenerator {
                 });
             }
 
+            if let Some(activation) = self.topology.get_activation_power_microwatts() {
+                self.data.push(Metric {
+                    name: String::from("scaph_host_activation_power_microwatts"),
+                    metric_type: String::from("gauge"),
+                    ttl: 60.0,
+                    timestamp: activation.timestamp,
+                    hostname: self.hostname.clone(),
+                    state: String::from("ok"),
+                    tags: vec!["scaphandre".to_string()],
+                    attributes: HashMap::new(),
+                    description: String::from("Activation power measurement for the whole host, in microwatts"),
+                    metric_value: MetricValueType::Text(activation.value),
+                });
+            }
+
+            if let Some(background) = self.topology.get_background_power_microwatts() {
+                self.data.push(Metric {
+                    name: String::from("scaph_host_background_power_microwatts"),
+                    metric_type: String::from("gauge"),
+                    ttl: 60.0,
+                    timestamp: background.timestamp,
+                    hostname: self.hostname.clone(),
+                    state: String::from("ok"),
+                    tags: vec!["scaphandre".to_string()],
+                    attributes: HashMap::new(),
+                    description: String::from("Background power (max of idle and activation) for the whole host, in microwatts"),
+                    metric_value: MetricValueType::Text(background.value),
+                });
+            }
+
             if let Some(cores) = self.topology.get_core_diff_power_microwatts() {
                 for (id, value) in cores.values.iter().enumerate() {
                     let mut attributes = HashMap::new();
@@ -729,6 +759,40 @@ impl MetricGenerator {
                             "Idle power measurement relative to a CPU socket, in microwatts",
                         ),
                         metric_value: MetricValueType::Text(socket_power_microwatts.clone()),
+                    });
+                }
+
+                if let Some(power) = socket.get_activation_power_microwatts() {
+                    self.data.push(Metric {
+                        name: String::from("scaph_socket_activation_power_microwatts"),
+                        metric_type: String::from("gauge"),
+                        ttl: 60.0,
+                        timestamp: power.timestamp,
+                        hostname: self.hostname.clone(),
+                        state: String::from("ok"),
+                        tags: vec!["scaphandre".to_string()],
+                        attributes: attributes.clone(),
+                        description: String::from(
+                            "Activation power measurement relative to a CPU socket, in microwatts",
+                        ),
+                        metric_value: MetricValueType::Text(power.value),
+                    });
+                }
+
+                if let Some(power) = socket.get_background_power_microwatts() {
+                    self.data.push(Metric {
+                        name: String::from("scaph_socket_background_power_microwatts"),
+                        metric_type: String::from("gauge"),
+                        ttl: 60.0,
+                        timestamp: power.timestamp,
+                        hostname: self.hostname.clone(),
+                        state: String::from("ok"),
+                        tags: vec!["scaphandre".to_string()],
+                        attributes: attributes.clone(),
+                        description: String::from(
+                            "Background power (max of idle and activation) relative to a CPU socket, in microwatts",
+                        ),
+                        metric_value: MetricValueType::Text(power.value),
                     });
                 }
             }

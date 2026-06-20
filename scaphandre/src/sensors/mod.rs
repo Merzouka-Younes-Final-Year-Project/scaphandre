@@ -671,7 +671,7 @@ impl Topology {
         ))
     }
 
-    fn get_background_power_microwatts(&self) -> Option<Record> {
+    pub fn get_background_power_microwatts(&self) -> Option<Record> {
         let idle = self.get_idle_power_microwatts()
             .as_ref()
             .and_then(|r| r.value.parse::<u64>().ok())

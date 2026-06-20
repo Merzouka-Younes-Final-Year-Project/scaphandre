@@ -93,6 +93,8 @@ struct Socket {
     consumption: f32,
     domains: Vec<Domain>,
     timestamp: f64,
+    activation: Option<f32>,
+    background: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -146,6 +148,8 @@ struct Host {
     consumption: f32,
     timestamp: f64,
     components: Components,
+    activation: Option<f32>,
+    background: Option<f32>,
 }
 #[derive(Serialize, Deserialize)]
 struct Core {
@@ -158,6 +162,8 @@ struct Core {
 struct Report {
     host: Host,
     idle: Option<f32>,
+    activation: Option<f32>,
+    background: Option<f32>,
     consumers: Vec<Consumer>,
     sockets: Vec<Socket>,
     cores: Vec<Core>,
@@ -326,10 +332,20 @@ impl JsonExporter {
             let host_power_string = format!("{}", host_metric.metric_value);
             let host_power_f32 = host_power_string.parse::<f32>().unwrap();
             if host_power_f32 > 0.0 {
+                let activation = metrics
+                    .iter()
+                    .find(|x| x.name == "scaph_host_activation_power_microwatts")
+                    .and_then(|m| format!("{}", m.metric_value).parse::<f32>().ok());
+                let background = metrics
+                    .iter()
+                    .find(|x| x.name == "scaph_host_background_power_microwatts")
+                    .and_then(|m| format!("{}", m.metric_value).parse::<f32>().ok());
                 host_report = Some(Host {
                     consumption: host_power_f32,
                     timestamp: host_metric.timestamp.as_secs_f64(),
                     components: Components { disks: None },
+                    activation,
+                    background,
                 });
             }
         } else {
@@ -522,6 +538,14 @@ impl JsonExporter {
                         consumption: socket_power,
                         domains,
                         timestamp: metric.timestamp.as_secs_f64(),
+                        activation: metrics.iter().find(|x| {
+                            x.name == "scaph_socket_activation_power_microwatts"
+                                && x.attributes.get("socket_id").unwrap().parse::<u16>().unwrap() == socket.id
+                        }).and_then(|m| format!("{}", m.metric_value).parse::<f32>().ok()),
+                        background: metrics.iter().find(|x| {
+                            x.name == "scaph_socket_background_power_microwatts"
+                                && x.attributes.get("socket_id").unwrap().parse::<u16>().unwrap() == socket.id
+                        }).and_then(|m| format!("{}", m.metric_value).parse::<f32>().ok()),
                     })
                 } else {
                     None
@@ -534,6 +558,16 @@ impl JsonExporter {
                 let idle = metrics
                     .iter()
                     .find(|x| x.name == "scaph_host_idle_power_microwatts")
+                    .and_then(|m| format!("{}", m.metric_value).parse::<f32>().ok());
+
+                let activation = metrics
+                    .iter()
+                    .find(|x| x.name == "scaph_host_activation_power_microwatts")
+                    .and_then(|m| format!("{}", m.metric_value).parse::<f32>().ok());
+
+                let background = metrics
+                    .iter()
+                    .find(|x| x.name == "scaph_host_background_power_microwatts")
                     .and_then(|m| format!("{}", m.metric_value).parse::<f32>().ok());
 
                 let cores = self
@@ -558,6 +592,8 @@ impl JsonExporter {
                 let report = Report {
                     host,
                     idle,
+                    activation,
+                    background,
                     consumers: top_consumers,
                     sockets: all_sockets,
                     cores,
