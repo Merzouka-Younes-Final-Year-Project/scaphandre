@@ -557,6 +557,42 @@ impl MetricGenerator {
                 }
             }
 
+            let core_coefs = self.topology.get_core_coefs();
+            let core_proportions = self.topology.get_core_proportions();
+            let timestamp = current_system_time_since_epoch();
+            for (id, coef) in core_coefs.iter().enumerate() {
+                let mut attributes = HashMap::new();
+                attributes.insert("core_id".to_string(), id.to_string());
+                self.data.push(Metric {
+                    name: String::from("scaph_host_core_coef"),
+                    metric_type: String::from("gauge"),
+                    ttl: 60.0,
+                    timestamp,
+                    hostname: self.hostname.clone(),
+                    state: String::from("ok"),
+                    tags: vec!["scaphandre".to_string()],
+                    attributes,
+                    description: String::from("Per-core IPC/frequency coefficient used for power attribution"),
+                    metric_value: MetricValueType::Text(coef.to_string()),
+                });
+            }
+            for (id, proportion) in core_proportions.iter().enumerate() {
+                let mut attributes = HashMap::new();
+                attributes.insert("core_id".to_string(), id.to_string());
+                self.data.push(Metric {
+                    name: String::from("scaph_host_core_proportion"),
+                    metric_type: String::from("gauge"),
+                    ttl: 60.0,
+                    timestamp,
+                    hostname: self.hostname.clone(),
+                    state: String::from("ok"),
+                    tags: vec!["scaphandre".to_string()],
+                    attributes,
+                    description: String::from("Per-core proportion of total power attributed to this core (0.0–1.0)"),
+                    metric_value: MetricValueType::Text(proportion.to_string()),
+                });
+            }
+
         }
         if let Some(metric_value) = self.topology.get_load_avg() {
             self.data.push(Metric {

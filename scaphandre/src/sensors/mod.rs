@@ -638,14 +638,9 @@ impl Topology {
         cores.sort_by_key(|c| c.id);
         cores
     }
-    
-    /// Returns a MultiValuedRecord instance containing the per-core power consumed between
-    /// last and previous measurement, in microwatts.
-    pub fn get_core_diff_power_microwatts(&self) -> Option<MultiValuedRecord> {
-        let conso = self.get_records_diff_power_microwatts()
-            .and_then(|r| r.value.parse::<f64>().ok()).unwrap_or(0_f64);
-        debug!("Using formula v_enhanced_ipc_aperf_aperf_div_mperf");
-        let coefs = self.get_cores()
+
+    pub fn get_core_coefs(&self) -> Vec<f64> {
+        self.get_cores()
             .iter()
             .map(|c| {
                 if let Some(metrics) = c.get_core_metrics_delta() {
@@ -657,16 +652,29 @@ impl Topology {
                 } else {
                     0_f64
                 }
-            }).collect::<Vec<f64>>();
+            }).collect::<Vec<f64>>()
+    }
+
+    pub fn get_core_proportions(&self) -> Vec<f64> {
+        let coefs = self.get_core_coefs();
         let total_coefs: f64 = coefs.iter().sum();
-        let coefs = coefs
+        coefs
             .iter()
-            .map(|c| if total_coefs != 0_f64 { c/total_coefs } else { 0_f64 } * conso)
-            .collect::<Vec<f64>>();
+            .map(|c| if total_coefs != 0_f64 { c/total_coefs } else { 0_f64 })
+            .collect::<Vec<f64>>()
+    }
+    
+    /// Returns a MultiValuedRecord instance containing the per-core power consumed between
+    /// last and previous measurement, in microwatts.
+    pub fn get_core_diff_power_microwatts(&self) -> Option<MultiValuedRecord> {
+        let conso = self.get_records_diff_power_microwatts()
+            .and_then(|r| r.value.parse::<f64>().ok()).unwrap_or(0_f64);
+        debug!("Using formula v_enhanced_ipc_aperf_aperf_div_mperf");
+        let energies = self.get_core_proportions().iter().map(|p| p * conso).collect::<Vec<f64>>();
         Some(MultiValuedRecord::new(
             current_system_time_since_epoch(),
-            coefs.iter().map(|c| c.to_string()).collect(),
-            coefs.iter().map(|_| units::Unit::Numeric).collect(),
+            energies.iter().map(|c| c.to_string()).collect(),
+            energies.iter().map(|_| units::Unit::Numeric).collect(),
         ))
     }
 

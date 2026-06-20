@@ -156,6 +156,8 @@ struct Core {
     id: usize,
     consumption: f64,
     timestamp: f64,
+    coef: f64,
+    proportion: f64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -570,6 +572,8 @@ impl JsonExporter {
                     .find(|x| x.name == "scaph_host_background_power_microwatts")
                     .and_then(|m| format!("{}", m.metric_value).parse::<f32>().ok());
 
+                let core_coefs = self.metric_generator.topology.get_core_coefs();
+                let core_proportions = self.metric_generator.topology.get_core_proportions();
                 let cores = self
                     .metric_generator
                     .topology
@@ -583,6 +587,8 @@ impl JsonExporter {
                                     id,
                                     consumption,
                                     timestamp: r.timestamp.as_secs_f64(),
+                                    coef: core_coefs.get(id).copied().unwrap_or(0.0),
+                                    proportion: core_proportions.get(id).copied().unwrap_or(0.0),
                                 })
                             })
                             .collect::<Vec<_>>()
