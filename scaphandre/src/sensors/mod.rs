@@ -6,6 +6,7 @@
 #[cfg(target_os = "windows")]
 pub mod msr_rapl;
 use aya::Ebpf;
+use aya::maps::{MapData, RingBuf};
 use docker_sync::network;
 #[cfg(target_os = "windows")]
 use msr_rapl::get_msr_value;
@@ -79,6 +80,8 @@ pub struct Topology {
     pub _sensor_data: HashMap<String, String>,
     /// Ebpf Program Handle
     pub ebpf: Option<Ebpf>,
+    /// Ring buffer receiving CpuStateEvents from the cpu_state_tick eBPF program
+    pub cpu_state_buffer: Option<RingBuf<MapData>>,
 }
 
 impl RecordGenerator for Topology {
@@ -169,6 +172,7 @@ impl Clone for Topology {
             domains_names: self.domains_names.clone(),
             _sensor_data: self._sensor_data.clone(),
             ebpf: None, // Ebpf handles cannot be cloned; cloned topologies won't track eBPF data
+            cpu_state_buffer: None,
         }
     }
 }
@@ -177,6 +181,7 @@ impl Topology {
     /// Instanciates Topology and returns the instance
     pub fn new(sensor_data: HashMap<String, String>) -> Topology {
         let mut ebpf = crate::bpf::load().ok();
+        let cpu_state_buffer = ebpf.as_mut().and_then(|e| crate::bpf::take_cpu_state_buffer(e));
         Topology {
             sockets: vec![],
             proc_tracker: ProcessTracker::new(5, ebpf.as_mut()),
@@ -186,6 +191,7 @@ impl Topology {
             domains_names: None,
             _sensor_data: sensor_data,
             ebpf,
+            cpu_state_buffer,
         }
     }
 

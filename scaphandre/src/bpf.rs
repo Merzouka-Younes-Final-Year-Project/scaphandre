@@ -1,4 +1,5 @@
 use aya::{
+    maps::{MapData, RingBuf},
     programs::{
         perf_event::{PerfEvent, PerfEventConfig, PerfEventScope, SamplePolicy, SoftwareEvent},
         TracePoint,
@@ -6,9 +7,13 @@ use aya::{
     util::online_cpus,
 };
 use log::warn;
+use scaphandre_common::CpuStateEvent;
 
-/// Tick interval in milliseconds. Controls how often `sample_tick` fires per CPU.
-const TICK_INTERVAL_MS: u64 = 10;
+/// `sample_tick` fires every 5 ms → 200 Hz.
+const SAMPLE_TICK_HZ: u64 = 200;
+
+/// `cpu_state_tick` fires every 10 ms → 100 Hz.
+const CPU_STATE_TICK_HZ: u64 = 100;
 
 /// Loads the eBPF program and attaches it to sched_switch. Returns the Ebpf handle.
 pub fn load() -> anyhow::Result<aya::Ebpf> {
@@ -32,18 +37,63 @@ pub fn load() -> anyhow::Result<aya::Ebpf> {
 
     let tick: &mut PerfEvent = ebpf.program_mut("sample_tick").unwrap().try_into()?;
     tick.load()?;
-    let freq = 1000 / TICK_INTERVAL_MS;
     for cpu in online_cpus().map_err(|(_, e)| e)? {
         tick.attach(
             PerfEventConfig::Software(SoftwareEvent::CpuClock),
             PerfEventScope::AllProcessesOneCpu { cpu },
-            SamplePolicy::Frequency(freq),
+            SamplePolicy::Frequency(SAMPLE_TICK_HZ),
             true,
         )?;
     }
-    debug!("Loaded Tick eBPF program.");
+    debug!("Loaded sample_tick eBPF program (200 Hz / 5 ms).");
+
+    let state_tick: &mut PerfEvent = ebpf.program_mut("cpu_state_tick").unwrap().try_into()?;
+    state_tick.load()?;
+    for cpu in online_cpus().map_err(|(_, e)| e)? {
+        state_tick.attach(
+            PerfEventConfig::Software(SoftwareEvent::CpuClock),
+            PerfEventScope::AllProcessesOneCpu { cpu },
+            SamplePolicy::Frequency(CPU_STATE_TICK_HZ),
+            true,
+        )?;
+    }
+    debug!("Loaded cpu_state_tick eBPF program (100 Hz / 10 ms).");
 
     Ok(ebpf)
+}
+
+/// Takes the `CPU_STATE_EVENTS` ring buffer out of the eBPF object.
+/// Returns `None` if the map is missing or has the wrong type.
+pub fn take_cpu_state_buffer(ebpf: &mut aya::Ebpf) -> Option<RingBuf<MapData>> {
+    ebpf.take_map("CPU_STATE_EVENTS")
+        .and_then(|m| RingBuf::try_from(m).ok())
+}
+
+/// Drains all pending [`CpuStateEvent`]s from the ring buffer without blocking.
+///
+/// # Usage
+/// ```rust,ignore
+/// if let Some(buf) = &mut topology.cpu_state_buffer {
+///     for event in bpf::drain_cpu_state_events(buf) {
+///         match event.event_type {
+///             CpuEventType::ActivationEvent => { /* cpu became active */ }
+///             CpuEventType::IdleEvent       => { /* cpu went idle    */ }
+///         }
+///     }
+/// }
+/// ```
+pub fn drain_cpu_state_events(buf: &mut RingBuf<MapData>) -> Vec<CpuStateEvent> {
+    let mut events = Vec::new();
+    while let Some(item) = buf.next() {
+        if item.len() == std::mem::size_of::<CpuStateEvent>() {
+            // SAFETY: bytes come from the eBPF side as a valid #[repr(C)] CpuStateEvent.
+            let event: CpuStateEvent = unsafe {
+                std::ptr::read_unaligned(item.as_ptr() as *const CpuStateEvent)
+            };
+            events.push(event);
+        }
+    }
+    events
 }
 
 /// Initialises the eBPF log-flush task on the current tokio runtime.

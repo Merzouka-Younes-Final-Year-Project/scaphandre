@@ -1,5 +1,5 @@
 use aya::Ebpf;
-use aya::maps::{MapData, PerCpuHashMap};
+use aya::maps::{MapData, PerCpuHashMap, RingBuf};
 use ordered_float::*;
 #[cfg(target_os = "linux")]
 use procfs;
