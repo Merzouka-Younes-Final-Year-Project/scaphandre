@@ -90,6 +90,18 @@
           "interval": "",
           "legendFormat": "host idle",
           "refId": "B"
+        },
+        {
+          "expr": "scaph_host_activation_power_microwatts",
+          "interval": "",
+          "legendFormat": "host activation",
+          "refId": "C"
+        },
+        {
+          "expr": "scaph_host_background_power_microwatts",
+          "interval": "",
+          "legendFormat": "host background",
+          "refId": "D"
         }
       ],
       "thresholds": [],
@@ -191,6 +203,18 @@
           "interval": "",
           "legendFormat": "socket {{socket_id}} idle",
           "refId": "B"
+        },
+        {
+          "expr": "scaph_socket_activation_power_microwatts",
+          "interval": "",
+          "legendFormat": "socket {{socket_id}} activation",
+          "refId": "C"
+        },
+        {
+          "expr": "scaph_socket_background_power_microwatts",
+          "interval": "",
+          "legendFormat": "socket {{socket_id}} background",
+          "refId": "D"
         }
       ],
       "thresholds": [],
