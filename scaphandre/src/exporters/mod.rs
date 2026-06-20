@@ -564,7 +564,7 @@ impl MetricGenerator {
                 let mut attributes = HashMap::new();
                 attributes.insert("core_id".to_string(), id.to_string());
                 self.data.push(Metric {
-                    name: String::from("scaph_host_core_coef"),
+                    name: String::from("scaph_host_core_coefficient"),
                     metric_type: String::from("gauge"),
                     ttl: 60.0,
                     timestamp,

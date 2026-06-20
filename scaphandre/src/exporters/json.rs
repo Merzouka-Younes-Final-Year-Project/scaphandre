@@ -156,7 +156,7 @@ struct Core {
     id: usize,
     consumption: f64,
     timestamp: f64,
-    coef: f64,
+    coefficient: f64,
     proportion: f64,
 }
 
@@ -587,7 +587,7 @@ impl JsonExporter {
                                     id,
                                     consumption,
                                     timestamp: r.timestamp.as_secs_f64(),
-                                    coef: core_coefs.get(id).copied().unwrap_or(0.0),
+                                    coefficient: core_coefs.get(id).copied().unwrap_or(0.0),
                                     proportion: core_proportions.get(id).copied().unwrap_or(0.0),
                                 })
                             })
