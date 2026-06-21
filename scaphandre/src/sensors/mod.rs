@@ -1457,7 +1457,7 @@ impl Topology {
                 );
             }
             if let Some(core_percentages) = core_percentages {
-                let result = self.get_proportional_core_diff_power_microwatts().map(|r| {
+                let result = self.get_core_powers_microwatts().map(|r| {
                     r.values
                         .iter()
                         .enumerate()
