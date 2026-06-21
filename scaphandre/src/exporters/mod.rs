@@ -538,7 +538,7 @@ impl MetricGenerator {
                 });
             }
 
-            if let Some(cores) = self.topology.get_core_diff_power_microwatts() {
+            if let Some(cores) = self.topology.get_core_powers_microwatts() {
                 for (id, value) in cores.values.iter().enumerate() {
                     let mut attributes = HashMap::new();
                     attributes.insert("core_id".to_string(), id.to_string());
