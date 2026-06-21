@@ -52,7 +52,9 @@ Each element describes one logical CPU core for the current interval.
   "coefficient": 0.312,
   "proportion": 0.085,
   "coefficient_diff": 0.014,
-  "power_change_microwatts": 12000.0
+  "power_change_microwatts": 12000.0,
+  "coefficient_diff_proportion": 0.072,
+  "power_change_proportion": 0.068
 }
 ```
 
@@ -65,6 +67,8 @@ Each element describes one logical CPU core for the current interval.
 | `proportion` | float | This core's share of the total coefficient sum, in [0, 1] |
 | `coefficient_diff` | float | Signed change in this core's coefficient since the previous interval |
 | `power_change_microwatts` | float | Attributed signed change in this core's power since the previous interval, in microwatts |
+| `coefficient_diff_proportion` | float | This core's share of total absolute coefficient change, in [0, 1] (see below) |
+| `power_change_proportion` | float | This core's share of total absolute power change, in [0, 1] (see below) |
 
 ### `coefficient`
 
@@ -103,3 +107,23 @@ consumption[t] = consumption[t-1] + power_change_microwatts[t]
 ```
 
 So `consumption` is the absolute estimate and `power_change_microwatts` is the interval delta that produced it.
+
+### `coefficient_diff_proportion`
+
+This core's share of the total *absolute* coefficient change across all cores:
+
+```
+coefficient_diff_proportion_i = |coefficient_diff_i| / sum(|coefficient_diff_j|)
+```
+
+Unlike `proportion` (which is based on the raw coefficient), this field tells you how much of the *activity shift* this interval belongs to this core, regardless of sign. All values sum to 1.0. A core with a large `coefficient_diff_proportion` drove most of the workload change in this interval.
+
+### `power_change_proportion`
+
+This core's share of the total *absolute* attributed power change:
+
+```
+power_change_proportion_i = |power_change_microwatts_i| / sum(|power_change_microwatts_j|)
+```
+
+This is the normalised version of `power_change_microwatts`. All values sum to 1.0. It answers "of all the power that shifted between cores this interval, what fraction went to (or from) this core?" — useful for comparing relative volatility across cores without needing to know the absolute scale.

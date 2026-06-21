@@ -816,6 +816,23 @@ impl Topology {
         Some(diffs)
     }
 
+    /// Returns each core's share of the total absolute coefficient change:
+    /// `|coef_diff_i| / sum(|coef_diff_j|)`. Returns zeros if the total is zero.
+    pub fn get_core_coefficient_diff_proportions(&self) -> Option<Vec<f64>> {
+        let diffs = self.get_core_coefficient_diffs()?;
+        let total: f64 = diffs.iter().map(|c| c.abs()).sum();
+        Some(diffs.iter().map(|c| if total != 0.0 { c.abs() / total } else { 0.0 }).collect())
+    }
+
+    /// Returns each core's share of the total absolute power change:
+    /// `|power_change_i| / sum(|power_change_j|)`. Returns zeros if the total is zero.
+    /// Must be called after `refresh_core_powers_record`.
+    pub fn get_core_power_change_proportions(&self) -> Option<Vec<f64>> {
+        let changes = self.get_core_power_changes_microwatts()?;
+        let total: f64 = changes.iter().map(|c| c.abs()).sum();
+        Some(changes.iter().map(|c| if total != 0.0 { c.abs() / total } else { 0.0 }).collect())
+    }
+
 }
 
 #[cfg(target_os = "linux")]

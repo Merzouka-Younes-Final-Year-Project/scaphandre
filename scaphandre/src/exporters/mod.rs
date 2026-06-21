@@ -631,6 +631,44 @@ impl MetricGenerator {
                 }
             }
 
+            if let Some(coef_diff_proportions) = self.topology.get_core_coefficient_diff_proportions() {
+                for (id, proportion) in coef_diff_proportions.iter().enumerate() {
+                    let mut attributes = HashMap::new();
+                    attributes.insert("core_id".to_string(), id.to_string());
+                    self.data.push(Metric {
+                        name: String::from("scaph_host_core_coefficient_diff_proportion"),
+                        metric_type: String::from("gauge"),
+                        ttl: 60.0,
+                        timestamp,
+                        hostname: self.hostname.clone(),
+                        state: String::from("ok"),
+                        tags: vec!["scaphandre".to_string()],
+                        attributes,
+                        description: String::from("Per-core share of total absolute coefficient change: |coef_diff_i| / sum(|coef_diff_j|)"),
+                        metric_value: MetricValueType::Text(proportion.to_string()),
+                    });
+                }
+            }
+
+            if let Some(power_change_proportions) = self.topology.get_core_power_change_proportions() {
+                for (id, proportion) in power_change_proportions.iter().enumerate() {
+                    let mut attributes = HashMap::new();
+                    attributes.insert("core_id".to_string(), id.to_string());
+                    self.data.push(Metric {
+                        name: String::from("scaph_host_core_power_change_proportion"),
+                        metric_type: String::from("gauge"),
+                        ttl: 60.0,
+                        timestamp,
+                        hostname: self.hostname.clone(),
+                        state: String::from("ok"),
+                        tags: vec!["scaphandre".to_string()],
+                        attributes,
+                        description: String::from("Per-core share of total absolute power change: |power_change_i| / sum(|power_change_j|)"),
+                        metric_value: MetricValueType::Text(proportion.to_string()),
+                    });
+                }
+            }
+
         }
         if let Some(metric_value) = self.topology.get_load_avg() {
             self.data.push(Metric {
