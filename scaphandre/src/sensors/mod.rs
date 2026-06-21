@@ -497,21 +497,25 @@ impl Topology {
     /// Returns a MultiValuedRecord instance containing the per-core power consumed between
     /// last and previous measurement, in microwatts.
     pub fn get_proportional_core_diff_power_microwatts(&self) -> Option<MultiValuedRecord> {
-        let conso = self.get_records_diff_power_microwatts()
-            .and_then(|r| r.value.parse::<f64>().ok()).unwrap_or(0_f64);
-        debug!("Using formula v_enhanced_ipc_aperf_aperf_div_mperf");
-        let energies = self.get_core_proportions().iter().map(|p| p * conso).collect::<Vec<f64>>();
-        Some(MultiValuedRecord::new(
-            current_system_time_since_epoch(),
-            energies.iter().map(|c| c.to_string()).collect(),
-            energies.iter().map(|_| units::Unit::Numeric).collect(),
-        ))
+        if let Some(conso) = self.get_records_diff_power_microwatts()
+            .and_then(|r| r.value.parse::<f64>().ok()) {
+            debug!("Using formula v_enhanced_ipc_aperf_aperf_div_mperf");
+            let energies = self.get_core_proportions().iter().map(|p| p * conso).collect::<Vec<f64>>();
+            Some(MultiValuedRecord::new(
+                current_system_time_since_epoch(),
+                energies.iter().map(|c| c.to_string()).collect(),
+                energies.iter().map(|_| units::Unit::Numeric).collect(),
+            ))
+        } else {
+            None
+        }
     }
 
 
     // This part is for core coefs
     fn read_core_coefs_record(&self) -> Result<MultiValuedRecord, Box<dyn Error>> {
         let coefs = self.get_core_coefs();
+        debug!("CORE COEFS: {}", coefs.iter().map(|c| c.to_string()).collect::<Vec<String>>().join(", "));
         Ok(MultiValuedRecord::new(
             current_system_time_since_epoch(),
             coefs.iter().map(|c| c.to_string()).collect::<Vec<String>>(),
@@ -566,8 +570,8 @@ impl Topology {
         let prev = &self.core_coef_buffer[len - 2];
         let diffs: Vec<String> = last.values.iter().zip(prev.values.iter())
             .map(|(l, p)| {
-                let lv = l.parse::<i64>().unwrap_or(0);
-                let pv = p.parse::<i64>().unwrap_or(0);
+                let lv = l.parse::<f64>().unwrap_or(0.0);
+                let pv = p.parse::<f64>().unwrap_or(0.0);
                 (lv - pv).to_string()
             }).collect();
         let units = last.units.clone();
@@ -665,8 +669,9 @@ impl Topology {
             return self.get_proportional_core_diff_power_microwatts();
         }
         if let Some(coef_diffs) = self.get_records_diff_coefs()
-            .map(|r| r.values.iter().map(|v| v.parse::<i64>().unwrap_or(0)).collect::<Vec<i64>>())
+            .map(|r| r.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect::<Vec<f64>>())
         {
+            debug!("CORE coef diffs: {}", coef_diffs.iter().map(|c| c.to_string()).collect::<Vec<String>>().join(", "));
             if let Some(power_delta) = self.get_records_diff_power_diff_microwatts()
                 .as_ref()
                 .and_then(|r| r.value.parse::<i64>().ok())
@@ -674,41 +679,40 @@ impl Topology {
                 let last_powers = self.core_power_buffer.last().map(|r| {
                     r.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect::<Vec<f64>>()
                 });
-                let last_powers = match last_powers {
-                    Some(p) => p,
-                    None => return None,
-                };
+                debug!("CORE Last Powers: {}", last_powers.as_ref().unwrap_or(&vec![]).iter().map(|v| v.to_string()).collect::<Vec<String>>().join(", "));
+                let last_powers = last_powers?;
 
                 if power_delta != 0 {
-                    let abs_coef_total: i64 = coef_diffs.iter().map(|c| c.abs()).sum();
-                    if abs_coef_total == 0 {
+                    let abs_coef_total: f64 = coef_diffs.iter().map(|c| c.abs()).sum();
+                    if abs_coef_total == 0.0 {
                         // Power shifted but no core changed its activity level — the change
                         // likely comes from a source unrelated to core execution (e.g. memory,
                         // I/O subsystems). Return the previous per-core power unchanged.
                         return self.core_power_buffer.last().cloned();
                     }
-                    let net_coef_change: i64 = coef_diffs.iter().sum();
-                    if net_coef_change != 0 {
+                    let net_coef_change: f64 = coef_diffs.iter().sum();
+                    if net_coef_change != 0.0 {
                         // Each core's signed power change is:
                         //   power_change_i = (coef_diff_i / abs_coef_total) * abs_power_delta_total
                         // Summing over all cores and equating to power_delta yields:
                         //   abs_power_delta_total = (abs_coef_total / net_coef_change) * power_delta
                         let abs_power_delta_total: f64 =
-                            (abs_coef_total as f64 / net_coef_change as f64) * power_delta as f64;
+                            (abs_coef_total / net_coef_change) * power_delta as f64;
 
                         // The per-core power changes distribute the total absolute power shift
                         // among cores in proportion to their absolute coefficient deltas, with
                         // the sign of each coefficient delta determining gain (+) or loss (−).
                         let core_power_changes = coef_diffs
                             .iter()
-                            .map(|c| (*c as f64 / abs_coef_total as f64) * abs_power_delta_total);
+                            .map(|c| (*c / abs_coef_total) * abs_power_delta_total);
 
                         // coef_to_power = abs_power_delta_total / abs_coef_total simplifies to a
                         // per-unit scaling factor. It cancels per-core when computing individual
                         // changes, so we simply keep a running average for the fallback estimator.
                         self.coef_to_power = (self.coef_to_power
-                            + (abs_power_delta_total / abs_coef_total as f64))
+                            + (abs_power_delta_total / abs_coef_total))
                             / 2.0;
+                        debug!("CORE Power Delta (Happy Path) (power_delta={power_delta}, net_coef_change=0): {}", core_power_changes.clone().map(|c| c.to_string()).collect::<Vec<String>>().join(", "));
 
                         // Apply each core's signed power change to the previous measurement.
                         let new_values: Vec<String> = last_powers
@@ -716,6 +720,7 @@ impl Topology {
                             .zip(core_power_changes)
                             .map(|(prev, delta)| (prev + delta).to_string())
                             .collect();
+                        debug!("CORE New values (Happy Path) (power_delta={power_delta}, net_coef_change={net_coef_change}): {}", new_values.join(", "));
                         let units = vec![units::Unit::MicroWatt; new_values.len()];
                         return Some(MultiValuedRecord::new(
                             current_system_time_since_epoch(),
@@ -727,8 +732,8 @@ impl Topology {
                     // zero-power-delta path which handles this case with the same formula.
                 }
 
-                let abs_coef_total: i64 = coef_diffs.iter().map(|c| c.abs()).sum();
-                if abs_coef_total != 0 {
+                let abs_coef_total: f64 = coef_diffs.iter().map(|c| c.abs()).sum();
+                if abs_coef_total != 0.0 {
                     // Derive abs_power_delta_total from the constraint sum(power_change_i) == 0.
                     // Pick core 0 as the anchor: estimate its power change via coef_to_power,
                     // then substitute all other cores' changes using the proportional formula and
@@ -739,28 +744,30 @@ impl Topology {
                     // where s = sum of remaining coefficient deltas.
                     let mut coef_iter = coef_diffs.iter();
                     if let Some(selected_coef) = coef_iter.next() {
-                        let selected_power = self.coef_to_power * *selected_coef as f64;
-                        let s: i64 = coef_iter.sum();
-                        if s == 0 {
+                        let selected_power = self.coef_to_power * *selected_coef;
+                        let s: f64 = coef_iter.sum();
+                        if s == 0.0 {
                             // All coefficient change is in the anchor core; the remaining sum is
                             // zero so the denominator is undefined. Return the previous record.
                             return self.core_power_buffer.last().cloned();
                         }
                         let abs_power_delta_total: f64 =
-                            -selected_power * (abs_coef_total as f64 / s as f64);
+                            -selected_power * (abs_coef_total / s);
                         let core_power_changes = coef_diffs
                             .iter()
-                            .map(|c| (*c as f64 / abs_coef_total as f64) * abs_power_delta_total);
+                            .map(|c| (*c / abs_coef_total) * abs_power_delta_total);
 
                         self.coef_to_power = (self.coef_to_power
-                            + (abs_power_delta_total / abs_coef_total as f64))
+                            + (abs_power_delta_total / abs_coef_total))
                             / 2.0;
 
+                        debug!("CORE Power Delta (power_delta={power_delta}, net_coef_change=0): {}", core_power_changes.clone().map(|c| c.to_string()).collect::<Vec<String>>().join(", "));
                         let new_values: Vec<String> = last_powers
                             .iter()
                             .zip(core_power_changes)
                             .map(|(prev, delta)| (prev + delta).to_string())
                             .collect();
+                        debug!("CORE New values (power_delta={power_delta}, net_coef_change=0): {}", new_values.join(", "));
                         let units = vec![units::Unit::MicroWatt; new_values.len()];
                         return Some(MultiValuedRecord::new(
                             current_system_time_since_epoch(),
@@ -771,6 +778,7 @@ impl Topology {
                 }
             }
         }
+        debug!("CORE returning old values: {}", self.core_power_buffer.last().map(|r| r.values.clone()).unwrap_or(vec![]).join(", "));
         self.core_power_buffer.last().cloned()
     }
 
