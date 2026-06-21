@@ -724,7 +724,15 @@ impl Topology {
             return None;
         }
         let abs_power_delta_total = (abs_coef_total / net_coef_change) * power_delta as f64;
-        let changes = coef_diffs.iter().map(|c| (c / abs_coef_total) * abs_power_delta_total).collect();
+        let changes = coef_diffs.iter().map(|c| (c / abs_coef_total) * abs_power_delta_total).collect::<Vec<f64>>();
+        // Apply correction to ground the changes to host power
+        // The idea is to simply using the coefficient that maps coefficient delta to power change
+        // which is in this case abs_power_delta_total / abs_coef_total I would estimate the host
+        // power delta using the net_coef_change, and using the ratio of the estimation to the actual
+        // power_delta I can know how much to correct each measurement
+        let estimated_delta_power = (abs_power_delta_total / abs_coef_total) * net_coef_change;
+        let changes = changes.iter().map(|c| c * power_delta as f64 / estimated_delta_power).collect();
+
         debug!("CORE Power Changes (delta path, power_delta={power_delta}, net_coef_change={net_coef_change}): {:?}", changes);
         Some((changes, abs_power_delta_total))
     }
@@ -748,7 +756,14 @@ impl Topology {
         }
         let selected_power = self.coef_to_power * selected_coef;
         let abs_power_delta_total = -selected_power * (abs_coef_total / s);
-        let changes = coef_diffs.iter().map(|c| (c / abs_coef_total) * abs_power_delta_total).collect();
+        let changes: Vec<f64> = coef_diffs.iter().map(|c| (c / abs_coef_total) * abs_power_delta_total).collect();
+
+        // This is effectively the same as in compute_core_power_changes_from_delta but instead of 
+        // having a good measured reference host delta power, we just assume our coef_to_power is
+        // correct enough to use as the reference
+        let estimated_delta_power = (abs_power_delta_total / abs_coef_total) * selected_coef;
+        let changes = changes.iter().map(|c| c * selected_power / estimated_delta_power).collect();
+
         debug!("CORE Power Changes (anchor path): {:?}", changes);
         Some((changes, abs_power_delta_total))
     }
