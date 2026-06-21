@@ -593,6 +593,44 @@ impl MetricGenerator {
                 });
             }
 
+            if let Some(coef_diffs) = self.topology.get_core_coefficient_diffs() {
+                for (id, diff) in coef_diffs.iter().enumerate() {
+                    let mut attributes = HashMap::new();
+                    attributes.insert("core_id".to_string(), id.to_string());
+                    self.data.push(Metric {
+                        name: String::from("scaph_host_core_coefficient_diff"),
+                        metric_type: String::from("gauge"),
+                        ttl: 60.0,
+                        timestamp,
+                        hostname: self.hostname.clone(),
+                        state: String::from("ok"),
+                        tags: vec!["scaphandre".to_string()],
+                        attributes,
+                        description: String::from("Signed change in per-core IPC/frequency coefficient since last interval"),
+                        metric_value: MetricValueType::Text(diff.to_string()),
+                    });
+                }
+            }
+
+            if let Some(power_changes) = self.topology.get_core_power_changes_microwatts() {
+                for (id, change) in power_changes.iter().enumerate() {
+                    let mut attributes = HashMap::new();
+                    attributes.insert("core_id".to_string(), id.to_string());
+                    self.data.push(Metric {
+                        name: String::from("scaph_host_core_power_change_microwatts"),
+                        metric_type: String::from("gauge"),
+                        ttl: 60.0,
+                        timestamp,
+                        hostname: self.hostname.clone(),
+                        state: String::from("ok"),
+                        tags: vec!["scaphandre".to_string()],
+                        attributes,
+                        description: String::from("Attributed per-core power change in microwatts since last interval"),
+                        metric_value: MetricValueType::Text(change.to_string()),
+                    });
+                }
+            }
+
         }
         if let Some(metric_value) = self.topology.get_load_avg() {
             self.data.push(Metric {

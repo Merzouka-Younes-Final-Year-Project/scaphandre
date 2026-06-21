@@ -682,104 +682,75 @@ impl Topology {
                 debug!("CORE Last Powers: {}", last_powers.as_ref().unwrap_or(&vec![]).iter().map(|v| v.to_string()).collect::<Vec<String>>().join(", "));
                 let last_powers = last_powers?;
 
-                if power_delta != 0 {
-                    let abs_coef_total: f64 = coef_diffs.iter().map(|c| c.abs()).sum();
+                let abs_coef_total: f64 = coef_diffs.iter().map(|c| c.abs()).sum();
+
+                let result = if power_delta != 0 {
                     if abs_coef_total == 0.0 {
-                        // Power shifted but no core changed its activity level — the change
-                        // likely comes from a source unrelated to core execution (e.g. memory,
-                        // I/O subsystems). Return the previous per-core power unchanged.
                         return self.core_power_buffer.last().cloned();
                     }
-                    let net_coef_change: f64 = coef_diffs.iter().sum();
-                    if net_coef_change != 0.0 {
-                        // Each core's signed power change is:
-                        //   power_change_i = (coef_diff_i / abs_coef_total) * abs_power_delta_total
-                        // Summing over all cores and equating to power_delta yields:
-                        //   abs_power_delta_total = (abs_coef_total / net_coef_change) * power_delta
-                        let abs_power_delta_total: f64 =
-                            (abs_coef_total / net_coef_change) * power_delta as f64;
+                    self.compute_core_power_changes_from_delta(&coef_diffs, power_delta, abs_coef_total)
+                        .or_else(|| self.compute_core_power_changes_from_anchor(&coef_diffs, abs_coef_total))
+                } else {
+                    self.compute_core_power_changes_from_anchor(&coef_diffs, abs_coef_total)
+                };
 
-                        // The per-core power changes distribute the total absolute power shift
-                        // among cores in proportion to their absolute coefficient deltas, with
-                        // the sign of each coefficient delta determining gain (+) or loss (−).
-                        let core_power_changes = coef_diffs
-                            .iter()
-                            .map(|c| (*c / abs_coef_total) * abs_power_delta_total);
-
-                        // coef_to_power = abs_power_delta_total / abs_coef_total simplifies to a
-                        // per-unit scaling factor. It cancels per-core when computing individual
-                        // changes, so we simply keep a running average for the fallback estimator.
-                        self.coef_to_power = (self.coef_to_power
-                            + (abs_power_delta_total / abs_coef_total))
-                            / 2.0;
-                        debug!("CORE Power Delta (Happy Path) (power_delta={power_delta}, net_coef_change=0): {}", core_power_changes.clone().map(|c| c.to_string()).collect::<Vec<String>>().join(", "));
-
-                        // Apply each core's signed power change to the previous measurement.
-                        let new_values: Vec<String> = last_powers
-                            .iter()
-                            .zip(core_power_changes)
-                            .map(|(prev, delta)| (prev + delta).to_string())
-                            .collect();
-                        debug!("CORE New values (Happy Path) (power_delta={power_delta}, net_coef_change={net_coef_change}): {}", new_values.join(", "));
-                        let units = vec![units::Unit::MicroWatt; new_values.len()];
-                        return Some(MultiValuedRecord::new(
-                            current_system_time_since_epoch(),
-                            new_values,
-                            units,
-                        ));
-                    }
-                    // net_coef_change == 0: cores' activities cancel out — fall through to the
-                    // zero-power-delta path which handles this case with the same formula.
-                }
-
-                let abs_coef_total: f64 = coef_diffs.iter().map(|c| c.abs()).sum();
-                if abs_coef_total != 0.0 {
-                    // Derive abs_power_delta_total from the constraint sum(power_change_i) == 0.
-                    // Pick core 0 as the anchor: estimate its power change via coef_to_power,
-                    // then substitute all other cores' changes using the proportional formula and
-                    // solve for the unknown abs_power_delta_total.
-                    //   selected_power = coef_to_power * coef_diff_0
-                    //   0 = selected_power + (s / abs_coef_total) * abs_power_delta_total
-                    //   => abs_power_delta_total = -selected_power * (abs_coef_total / s)
-                    // where s = sum of remaining coefficient deltas.
-                    let mut coef_iter = coef_diffs.iter();
-                    if let Some(selected_coef) = coef_iter.next() {
-                        let selected_power = self.coef_to_power * *selected_coef;
-                        let s: f64 = coef_iter.sum();
-                        if s == 0.0 {
-                            // All coefficient change is in the anchor core; the remaining sum is
-                            // zero so the denominator is undefined. Return the previous record.
-                            return self.core_power_buffer.last().cloned();
-                        }
-                        let abs_power_delta_total: f64 =
-                            -selected_power * (abs_coef_total / s);
-                        let core_power_changes = coef_diffs
-                            .iter()
-                            .map(|c| (*c / abs_coef_total) * abs_power_delta_total);
-
-                        self.coef_to_power = (self.coef_to_power
-                            + (abs_power_delta_total / abs_coef_total))
-                            / 2.0;
-
-                        debug!("CORE Power Delta (power_delta={power_delta}, net_coef_change=0): {}", core_power_changes.clone().map(|c| c.to_string()).collect::<Vec<String>>().join(", "));
-                        let new_values: Vec<String> = last_powers
-                            .iter()
-                            .zip(core_power_changes)
-                            .map(|(prev, delta)| (prev + delta).to_string())
-                            .collect();
-                        debug!("CORE New values (power_delta={power_delta}, net_coef_change=0): {}", new_values.join(", "));
-                        let units = vec![units::Unit::MicroWatt; new_values.len()];
-                        return Some(MultiValuedRecord::new(
-                            current_system_time_since_epoch(),
-                            new_values,
-                            units,
-                        ));
-                    }
+                if let Some((core_power_changes, abs_power_delta_total)) = result {
+                    self.coef_to_power = (self.coef_to_power + (abs_power_delta_total / abs_coef_total)) / 2.0;
+                    let new_values: Vec<String> = last_powers
+                        .iter()
+                        .zip(core_power_changes.iter())
+                        .map(|(prev, delta)| (prev + delta).to_string())
+                        .collect();
+                    debug!("CORE New values (power_delta={power_delta}): {}", new_values.join(", "));
+                    let units = vec![units::Unit::MicroWatt; new_values.len()];
+                    return Some(MultiValuedRecord::new(current_system_time_since_epoch(), new_values, units));
                 }
             }
         }
         debug!("CORE returning old values: {}", self.core_power_buffer.last().map(|r| r.values.clone()).unwrap_or(vec![]).join(", "));
         self.core_power_buffer.last().cloned()
+    }
+
+    /// Case 1: `power_delta != 0` and `net_coef_change != 0`.
+    /// Returns `(per_core_power_changes, abs_power_delta_total)` or `None` if `net_coef_change == 0`.
+    fn compute_core_power_changes_from_delta(
+        &self,
+        coef_diffs: &[f64],
+        power_delta: i64,
+        abs_coef_total: f64,
+    ) -> Option<(Vec<f64>, f64)> {
+        let net_coef_change: f64 = coef_diffs.iter().sum();
+        if net_coef_change == 0.0 {
+            return None;
+        }
+        let abs_power_delta_total = (abs_coef_total / net_coef_change) * power_delta as f64;
+        let changes = coef_diffs.iter().map(|c| (c / abs_coef_total) * abs_power_delta_total).collect();
+        debug!("CORE Power Changes (delta path, power_delta={power_delta}, net_coef_change={net_coef_change}): {:?}", changes);
+        Some((changes, abs_power_delta_total))
+    }
+
+    /// Cases 2 & 3: `power_delta == 0` or `net_coef_change == 0`.
+    /// Estimates `abs_power_delta_total` using the anchor-core (core 0) and `coef_to_power`.
+    /// Returns `(per_core_power_changes, abs_power_delta_total)` or `None` for degenerate inputs.
+    fn compute_core_power_changes_from_anchor(
+        &self,
+        coef_diffs: &[f64],
+        abs_coef_total: f64,
+    ) -> Option<(Vec<f64>, f64)> {
+        if abs_coef_total == 0.0 {
+            return None;
+        }
+        let mut iter = coef_diffs.iter();
+        let selected_coef = iter.next()?;
+        let s: f64 = iter.sum();
+        if s == 0.0 {
+            return None;
+        }
+        let selected_power = self.coef_to_power * selected_coef;
+        let abs_power_delta_total = -selected_power * (abs_coef_total / s);
+        let changes = coef_diffs.iter().map(|c| (c / abs_coef_total) * abs_power_delta_total).collect();
+        debug!("CORE Power Changes (anchor path): {:?}", changes);
+        Some((changes, abs_power_delta_total))
     }
 
     /// Computes the latest per-core power record and appends it to `core_power_buffer`.
@@ -822,6 +793,27 @@ impl Topology {
     /// the buffer has been populated by `refresh_core_powers_record`.
     pub fn get_core_powers_microwatts(&self) -> Option<MultiValuedRecord> {
         self.core_power_buffer.last().cloned()
+    }
+
+    /// Returns the signed per-core coefficient change between the last two coef buffer entries.
+    pub fn get_core_coefficient_diffs(&self) -> Option<Vec<f64>> {
+        self.get_records_diff_coefs()
+            .map(|r| r.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect())
+    }
+
+    /// Returns the attributed per-core power change (microwatts) between the last two entries
+    /// in `core_power_buffer`. Must be called after `refresh_core_powers_record`.
+    pub fn get_core_power_changes_microwatts(&self) -> Option<Vec<f64>> {
+        let len = self.core_power_buffer.len();
+        if len < 2 {
+            return None;
+        }
+        let last = &self.core_power_buffer[len - 1];
+        let prev = &self.core_power_buffer[len - 2];
+        let diffs: Vec<f64> = last.values.iter().zip(prev.values.iter())
+            .map(|(l, p)| l.parse::<f64>().unwrap_or(0.0) - p.parse::<f64>().unwrap_or(0.0))
+            .collect();
+        Some(diffs)
     }
 
 }
