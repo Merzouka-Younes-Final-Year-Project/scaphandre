@@ -734,7 +734,8 @@ impl Topology {
         let changes: Vec<f64> = changes.iter().map(|c| c * power_delta as f64 / estimated_delta_power).collect();
         // AI: TODO: Make the naming of this constant, keep power_delta for host level power change
         // and power change for core level power change, so this is probably better as
-        // abs_power_change_total
+        // abs_power_change_total or better total_power_change_magnitude since this is what it
+        // reflects
         let abs_power_delta_total: f64 = changes.iter().map(|c| c.abs()).sum();
 
         debug!("CORE Power Changes (delta path, power_delta={power_delta}, net_coef_change={net_coef_change}): {:?}", changes);

@@ -9,6 +9,8 @@ use aya_ebpf::{
 use aya_log_ebpf::info;
 use scaphandre_common::{CpuEventType, CpuStateEvent};
 
+// TODO: Ask LLM about fixes from this side and simplify if possible
+
 // TODO: Update to proper max keys
 const MAX_KEYS: u32 = 1024;
 const MAX_CPU: u32 = 256;
@@ -115,6 +117,7 @@ pub fn sample_tick(_ctx: PerfEventContext) -> u32 {
 }
 
 /// Fires every 10 ms. TODO: implement idle/active state event emission.
+// TODO: Fix this to execute only on one core
 #[perf_event]
 pub fn cpu_state_tick(_ctx: PerfEventContext) -> u32 {
     let mut socket_active_cpus: [u32; MAX_SOCKET as usize] = [u32::MAX; MAX_SOCKET as usize];
