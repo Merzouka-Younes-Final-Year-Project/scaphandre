@@ -2,6 +2,11 @@
 
 This document explains how Scaphandre estimates the power consumption of each individual CPU core. The goal is to go beyond a single host-level power reading and say *"core 0 used X microwatts, core 1 used Y microwatts"* — without any hardware support for per-core power sensors.
 
+This document records two iterations of the method:
+
+- `v_delta_of_delta`: the original approach.
+- `v_corrected_delta_of_delta`: the current approach.
+
 ---
 
 ## The Problem
@@ -155,3 +160,99 @@ On the very first measurement there is no previous per-core power reading to add
 | All coefficient deltas are zero | Keep the previous reading (nothing changed) |
 
 The key insight is that we never need to know the absolute power of a core directly — we only need to track *changes*, and we have enough constraints (the observed host delta and the proportionality assumption) to solve for those changes at each step.
+
+---
+
+## Version Notes
+
+### v_delta_of_delta
+
+This is the original version of the model documented above.
+
+It inferred per-core power changes from coefficient changes and the measured host-level power delta, but it had a failure mode when the net coefficient change was small relative to the individual coefficient deltas. In that case, the computed energy changes could become disproportionately large, because the host delta was effectively amplified through the ratio used to distribute power across cores.
+
+The practical symptom was that a modest real-world change at host level could produce an unrealistically large per-core energy jump.
+
+### v_corrected_delta_of_delta
+
+The current implementation keeps the same basic delta-based attribution, but adds a correction step so the per-core changes are grounded back against the measured host-level power delta. That makes the attribution more consistent with the observed measurement and avoids the large-energy-amplification problem from `v_delta_of_delta`.
+
+In other words, the new version fixes the original issue where a smaller net coefficient could cause a larger-than-realistic energy change.
+
+The remaining flaw is that the model is still stateful in a way that can get stuck:
+
+- a large host-level spike can push the core power estimate up sharply,
+- later measurements may not provide a strong enough corrective signal,
+- and the model can keep returning the inflated absolute core powers instead of converging back down.
+
+So `v_corrected_delta_of_delta` improves the scaling, but it does not yet make the absolute estimate self-correcting over time.
+
+### How the corrected version anchors to host-level power
+
+The corrected version still starts from the same two signals:
+
+- the signed coefficient change for each core,
+- the signed host-level power delta for the whole machine.
+
+The host delta is used as the external reference that fixes the scale of the per-core attribution.
+
+#### Main delta path
+
+When the host power changes and the coefficient deltas do not cancel out, the algorithm does this:
+
+1. Compute the total signed coefficient change:
+
+   ```
+   net_coef_change = sum_i(Δcoef_i)
+   ```
+
+2. Compute the total absolute coefficient movement:
+
+   ```
+   abs_coef_total = sum_i(|Δcoef_i|)
+   ```
+
+3. Use the host delta to solve for a total core-power-change magnitude:
+
+   ```
+   abs_power_delta_total = (abs_coef_total / net_coef_change) × Δpower
+   ```
+
+4. Distribute that total across cores proportionally to their signed coefficient deltas:
+
+   ```
+   raw_change_i = (Δcoef_i / abs_coef_total) × abs_power_delta_total
+   ```
+
+5. Re-ground the result against the measured host delta:
+
+   ```
+   estimated_delta_power = (abs_power_delta_total / abs_coef_total) × net_coef_change
+   corrected_change_i = raw_change_i × Δpower / estimated_delta_power
+   ```
+
+This last step is the anchoring step. It says the host measurement is the scale reference, and the per-core changes must be normalized so that reference stays consistent.
+
+#### Anchor fallback path
+
+If the host delta is zero, or if the coefficient deltas cancel out, the code falls back to an anchor-based estimate.
+
+In that path:
+
+1. The first core’s coefficient delta is taken as the anchor.
+2. The running `coef_to_power` factor is used to estimate that core’s power change:
+
+   ```
+   selected_power = coef_to_power × Δcoef_0
+   ```
+
+3. The remaining coefficient deltas are used to solve the zero-sum or cancelled-signal case.
+4. The resulting vector is again re-scaled so the anchor stays consistent with the inferred total change.
+
+This means the fallback path is not anchored to the current host delta directly; it is anchored to the historical `coef_to_power` estimate, which acts as the local reference when the host signal is not usable.
+
+#### What the anchoring achieves
+
+Anchoring prevents the attribution from being driven only by coefficient ratios. The host-level delta constrains the absolute size of the update, so the core vector remains tied to the observed machine-level change rather than floating freely.
+
+The remaining limitation is that this anchoring constrains a single update, but it does not automatically force the accumulated absolute per-core state to relax when later samples are weak or ambiguous. That is why a large spike can still leave the model stuck at an inflated value.
