@@ -2,16 +2,108 @@
 
 This document explains how Scaphandre estimates the power consumption of each individual CPU core. The goal is to go beyond a single host-level power reading and say *"core 0 used X microwatts, core 1 used Y microwatts"* — without any hardware support for per-core power sensors.
 
-This document records two iterations of the method:
+This document records two iterations of the delta-based method:
 
 - `v_delta_of_delta`: the original approach.
 - `v_corrected_delta_of_delta`: the current approach.
+
+Before those two versions, there was a simpler absolute proportional allocation method. It is included below only as motivation for why the delta-based model was introduced.
 
 ---
 
 ## The Problem
 
 RAPL (Running Average Power Limit) gives us the total power consumed by the whole CPU package, but not a breakdown per core. We need to figure out how to split that total among the individual cores in a meaningful way.
+
+---
+
+## Motivation: Why Absolute Proportional Allocation Was Rejected
+
+The earlier baseline approach attributed host power directly from the current coefficients:
+
+```
+power_i = (coef_i / sum_j(coef_j)) × host_power
+```
+
+At first glance this looks reasonable: a core with a larger coefficient gets a larger share of the observed host power.
+
+The problem is that this makes cores affect each other even when one core's own workload did not change.
+
+### Experimental setup that exposed the flaw
+
+The test setup in `../tests/test.sh` isolates one workload core running a stable `stress-ng` load, then later wakes up additional cores by disabling their C-states and fixing their frequency.
+
+The expectation for the original workload core was simple:
+
+- its own workload stayed stable,
+- its own coefficient stayed roughly stable,
+- so its attributed power should also stay roughly stable.
+
+What actually happened with the proportional model was different: once the additional cores became non-idle, the attributed power of the original workload core dipped.
+
+### Why the dip happens mathematically
+
+Suppose one core has coefficient `c`.
+
+Before the other cores are activated:
+
+- total coefficient sum is `s`,
+- host power is `r`,
+- attributed power for that core is:
+
+  ```
+  (c / s) × r
+  ```
+
+After the other cores become active:
+
+- total coefficient sum becomes `s'`,
+- host power becomes `r'`,
+- attributed power becomes:
+
+  ```
+  (c / s') × r'
+  ```
+
+For the first core's power to remain unchanged, the proportional model requires:
+
+```
+(c / s') × r' = (c / s) × r
+```
+
+which implies:
+
+```
+r' = (s' / s) × r
+```
+
+and equivalently:
+
+```
+r' - r = ((s' - s) / s) × r
+```
+
+This is exactly the relationship checked by `../tests/scripts/expected.py`.
+
+### What this means in practice
+
+The proportional model is only correct if the increase in host power scales strongly enough to cancel the dilution caused by the larger denominator `s'`.
+
+In the observed measurements, that did not happen. The added host power was smaller than the proportional model required. As a result, the unchanged workload core lost attributed power simply because other cores entered the denominator.
+
+That is the core flaw of absolute proportional allocation: it couples cores through the instantaneous coefficient sum and can move a stable core's power even when that core did not meaningfully change its own work.
+
+### Why this led to delta-of-delta
+
+The motivation for `v_delta_of_delta` was to stop attributing absolute host power from scratch at every sample.
+
+Instead, the idea was:
+
+- keep the previous per-core power state,
+- look only at changes in per-core work,
+- attribute the observed host power change to those work changes.
+
+Under that reasoning, if the original workload core stays roughly stable, its coefficient delta should stay small, while the extra work caused by newly non-idle cores should receive most of the observed host power delta.
 
 ---
 
