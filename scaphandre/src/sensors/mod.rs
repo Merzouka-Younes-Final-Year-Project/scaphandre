@@ -731,7 +731,11 @@ impl Topology {
         // power delta using the net_coef_change, and using the ratio of the estimation to the actual
         // power_delta I can know how much to correct each measurement
         let estimated_delta_power = (abs_power_delta_total / abs_coef_total) * net_coef_change;
-        let changes = changes.iter().map(|c| c * power_delta as f64 / estimated_delta_power).collect();
+        let changes: Vec<f64> = changes.iter().map(|c| c * power_delta as f64 / estimated_delta_power).collect();
+        // AI: TODO: Make the naming of this constant, keep power_delta for host level power change
+        // and power change for core level power change, so this is probably better as
+        // abs_power_change_total
+        let abs_power_delta_total: f64 = changes.iter().map(|c| c.abs()).sum();
 
         debug!("CORE Power Changes (delta path, power_delta={power_delta}, net_coef_change={net_coef_change}): {:?}", changes);
         Some((changes, abs_power_delta_total))
@@ -762,7 +766,8 @@ impl Topology {
         // having a good measured reference host delta power, we just assume our coef_to_power is
         // correct enough to use as the reference
         let estimated_delta_power = (abs_power_delta_total / abs_coef_total) * selected_coef;
-        let changes = changes.iter().map(|c| c * selected_power / estimated_delta_power).collect();
+        let changes: Vec<f64> = changes.iter().map(|c| c * selected_power / estimated_delta_power).collect();
+        let abs_power_delta_total: f64 = changes.iter().map(|c| c.abs()).sum();
 
         debug!("CORE Power Changes (anchor path): {:?}", changes);
         Some((changes, abs_power_delta_total))
