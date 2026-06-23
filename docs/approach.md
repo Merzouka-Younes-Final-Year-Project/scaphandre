@@ -348,3 +348,316 @@ This means the fallback path is not anchored to the current host delta directly;
 Anchoring prevents the attribution from being driven only by coefficient ratios. The host-level delta constrains the absolute size of the update, so the core vector remains tied to the observed machine-level change rather than floating freely.
 
 The remaining limitation is that this anchoring constrains a single update, but it does not automatically force the accumulated absolute per-core state to relax when later samples are weak or ambiguous. That is why a large spike can still leave the model stuck at an inflated value.
+
+---
+
+### v_diff_pid — Current approach
+
+The two previous versions accumulated absolute per-core power estimates and applied corrections on top of them. The structural problem with that design was that any large spike would inflate the absolute state, and later measurements could not force it back down — the correction was applied to the current update, not to the running total.
+
+`v_diff_pid` discards the multi-stage correction pipeline entirely and replaces it with two well-defined stages:
+
+1. **Diff-based nudge** — distribute the change in host power across cores by each core's share of total coefficient movement.
+2. **Scalar PID** — correct the aggregate residual between the nudged sum and the measured host power, distributing the correction by current activity share.
+
+The integral term in the PID loop is what makes the absolute estimate self-correcting: if the sum of per-core estimates persistently deviates from the measured host power, the integral accumulates and drives it back. That is the structural fix for the "stuck at an inflated value" problem from `v_corrected_delta_of_delta`.
+
+---
+
+#### Stage 1 — Diff-based nudge
+
+At each sample, for each core *i*, we compute:
+
+```
+weight_i = Δcoef_i / sum_j(|Δcoef_j|)
+nudged_power_i = prev_power_i + weight_i × host_diff
+```
+
+where `host_diff = host_power_t − host_power_{t−1}` is the signed change in total host power, and `Δcoef_i = coef_i_t − coef_i_{t−1}` is the signed change in that core's coefficient.
+
+The weights are signed. A core whose coefficient increased gets a positive weight and is nudged up; one whose coefficient decreased gets a negative weight and is nudged down. A core with a flat coefficient gets a weight near zero and its power estimate barely moves, regardless of what other cores do.
+
+The equal-split fallback (`weight_i = 1/n`) only applies when the total coefficient churn is essentially zero, meaning no core changed its activity between samples.
+
+This is the principal fix for the cross-core leakage problem from earlier versions. Because the nudge is gated on each core's own Δcoef, a stable core is not dragged by the transients of active cores.
+
+**This stage does not enforce `Σ nudged_power_i == host_power`.** That is intentional. The constraint is enforced gradually by Stage 2, not by a hard rescale at every cycle.
+
+---
+
+#### Stage 2 — Scalar PID residual correction
+
+After the nudge, the sum of per-core estimates will generally differ from the measured host power. The residual is:
+
+```
+residual = host_power − sum_i(nudged_power_i)
+```
+
+A standard PID loop accumulates this residual and computes a scalar correction:
+
+```
+integral += residual × dt           (clamped to ±PID_INTEGRAL_CLAMP)
+derivative = (residual − last_residual) / dt
+correction = KP × residual + KI × integral + KD × derivative
+```
+
+Current gain values (module-level constants, easy to retune):
+
+| Constant | Value |
+|---|---|
+| `PID_KP` | `0.4` |
+| `PID_KI` | `0.05` |
+| `PID_KD` | `0.0` |
+| `PID_INTEGRAL_CLAMP` | `50 000 µW` |
+
+`KD` is zero by default. Derivative on noisy per-sample residuals injects jitter into all cores simultaneously; it should only be enabled (with a smoothing EMA on the residual) if P+I alone produce sustained oscillation.
+
+The scalar correction is distributed across cores by **current activity share** — each core's coefficient as a fraction of the total:
+
+```
+corrected_power_i = nudged_power_i + correction × proportion_i
+```
+
+where `proportion_i = coef_i / sum_j(coef_j)`.
+
+Using current proportions (not Δcoef proportions) means the correction lands on whichever cores are doing work right now, regardless of whether their activity just changed.
+
+The integral term is what makes this model self-correcting over time. If the nudged sum is persistently below the host power (positive residual), the integral grows, the correction grows, and the per-core estimates rise until the residual closes. The proportional term responds immediately to each cycle's residual; the integral term eliminates steady-state bias over multiple cycles.
+
+---
+
+#### Anti-windup: integral reset on core transitions
+
+Core activation and deactivation events (a core going from zero to non-zero activity, or vice versa) are detected before the PID step:
+
+```
+transition detected if:  (prev_power ≤ 1.0 AND current_coef > 0)   ← activation
+                      OR  (prev_power > 1.0  AND current_coef ≤ 1e-9) ← deactivation
+```
+
+When a transition is detected, `core_pid_integral` is reset to zero before the correction is applied.
+
+Without this reset, integral bias accumulated during a steady state (e.g. 60 seconds of a stable workload) would be carried into the next phase and immediately over-correct the estimate at the moment of the transition. The reset discards that stale bias so the PID loop starts clean from the new operating point.
+
+---
+
+#### Bootstrap (cold start)
+
+On the very first sample, `core_power_buffer` is empty and there is no previous power state to nudge from. In that case the estimate is seeded with an even split:
+
+```
+initial_power_i = host_power / n
+```
+
+No PID correction is applied on the first sample. The loop begins correcting from the second sample onward.
+
+---
+
+#### dt: actual elapsed time
+
+The PID integral term requires a time step `dt`. This is computed from the timestamps of the last two entries in `power_buffer`:
+
+```
+dt = (timestamp_t − timestamp_{t-1}).max(1ms)
+```
+
+Using real elapsed time rather than an assumed constant keeps the integral units consistent (µW·s accumulates to µJ) regardless of whether the sampling cadence is uniform.
+
+---
+
+#### Output: non-negativity floor, no rescale
+
+After the PID correction, a floor is applied:
+
+```
+final_power_i = max(corrected_power_i, 0.0)
+```
+
+There is no rescale-to-sum step. Forcing `Σ final_power_i == host_power` at every cycle would zero out the residual before the integral term could accumulate it, defeating the purpose of having an integral term. The PID loop converges `Σ power_i` toward `host_power` over a few cycles; it does not need to be exact at every individual sample.
+
+---
+
+#### Summary of the new design
+
+| Stage | Input | Output | Purpose |
+|---|---|---|---|
+| Diff nudge | `prev_powers`, `Δcoef`, `host_diff` | `nudged_powers` | Track each core's own activity change without coupling through a shared denominator |
+| Scalar PID | `nudged_powers`, `host_power`, `proportions`, `dt` | `corrected_powers` | Drive `Σ power_i → host_power` over time; integral eliminates steady-state bias |
+| Floor | `corrected_powers` | `final_powers` | Prevent negative power values |
+
+The PID state is two scalars (`core_pid_integral`, `last_residual`), not a per-core vector. All the complexity of the old six-stage pipeline is replaced by these two well-understood stages with five tunable constants.
+
+---
+
+### v_host_constrained_observer — Current approach
+
+`v_corrected_delta_of_delta` fixed the scaling problem of the original version but left one structural limitation: the correction step operated on a single update and had no mechanism to pull the accumulated absolute state back toward reality when later samples were weak. A large spike could leave the running per-core totals inflated indefinitely.
+
+`v_host_constrained_observer` addresses this by restructuring the computation as a **predict–correct observer loop**, a pattern used in control systems such as drone attitude estimators. In those systems, an inertial predictor (fast, noisy) is continuously corrected by a slower, more reliable measurement. Here:
+
+- the **predictor** uses each core's own coefficient evolution to advance its power estimate from the previous state,
+- the **corrector** uses the host-level RAPL measurement as the reliable external reference that pulls the vector back toward the true total.
+
+The per-core state is never trusted to drift unchecked: every cycle it is predicted forward, then corrected against the measurement.
+
+---
+
+#### Five-stage pipeline
+
+Each call to `read_core_powers_record` runs five stages in sequence:
+
+```
+predict → build_reference → update_uncertainty → correct → blend → normalize
+```
+
+---
+
+#### Stage 1 — Predict (`predict_core_powers`)
+
+The predictor advances each core's power estimate using the ratio of its current coefficient to its previous coefficient:
+
+```
+ratio_i = clamp(coef_i_t / coef_i_{t-1}, 0.25, 4.0)
+predicted_i = prev_power_i × ratio_i ^ RATIO_GAMMA        (RATIO_GAMMA = 0.75)
+```
+
+The ratio captures whether the core got busier or less busy. Raising it to `RATIO_GAMMA < 1` applies a damping: a core that doubled its coefficient does not get double the power immediately — the exponent moderates the response, preventing the predictor from overreacting to a single noisy sample.
+
+The ratio is clamped to `[0.25, 4.0]` to guard against division-by-near-zero when a coefficient is very small, and to prevent runaway predictions when a coefficient spikes.
+
+For cores that were previously idle (`prev_coef ≈ 0`) but now have a non-zero coefficient, the predictor seeds them using the global `coef_to_power` scale:
+
+```
+predicted_i = NEW_CORE_GAIN × coef_to_power × coef_i_t      (NEW_CORE_GAIN = 0.2)
+```
+
+The conservative gain (0.2) avoids over-committing to a newly active core before any correction has been applied.
+
+`coef_to_power` itself is a running EMA of `total_power / total_coef` from the last accepted final state, updated at the end of each cycle.
+
+---
+
+#### Stage 2 — Build reference (`build_reference_core_powers`)
+
+In parallel with the predictor, a reference allocation is computed from scratch using only the current coefficients and the measured host power:
+
+```
+weight_i = coef_i ^ GAMMA          (GAMMA = 0.5)
+reference_i = host_power × (weight_i / sum_j(weight_j))
+```
+
+Using `coef^0.5` (square root) rather than `coef` directly compresses the dynamic range: a core with a very high coefficient is not given a proportionally outsized share. This makes the reference more conservative than a direct proportional split and reduces the pull toward overcommitting to active cores.
+
+The reference is **not used as the final answer**. It is the measurement in the observer sense — the slowly-varying, host-anchored signal that keeps the predictor from drifting.
+
+---
+
+#### Stage 3 — Update per-core uncertainty (`update_core_uncertainty`)
+
+Each core carries an `uncertainty` value in `[0.05, 1.0]` that tracks how much its current estimate should be distrusted. Higher uncertainty means the corrector and blender will act more aggressively on that core.
+
+The uncertainty for each core is updated every cycle as an EMA (decay = 0.4) of a freshly computed score:
+
+```
+fresh_i = MIN_UNCERTAINTY
+        + 0.8 × change_share_i      ← core's share of total coefficient movement
+        + 0.4 × jump_score_i        ← |predicted - prev| / host_power, clamped to 1
+        + 0.35 × activation_score_i ← 0.35 if core just activated, else 0
+        + 0.3 × mismatch_score_i    ← |predicted - reference| / host_power, only if already uncertain
+
+uncertainty_i = 0.4 × prev_uncertainty_i + 0.6 × fresh_i
+```
+
+The logic:
+- A core whose coefficient is changing a lot (`change_share` high) gets higher uncertainty — its predictor trajectory is less trustworthy.
+- A core whose prediction jumped far from its previous value (`jump_score` high) gets higher uncertainty — the predictor may have overreacted.
+- A core that just woke from idle (`activation_score`) gets elevated uncertainty immediately — the seeded value is a guess.
+- A core that was already uncertain *and* whose prediction disagrees with the reference (`mismatch_score`) gets an additional push toward higher uncertainty.
+
+Cores that have been stable for several cycles decay toward `MIN_UNCERTAINTY = 0.05`, meaning the corrector barely touches them.
+
+---
+
+#### Stage 4 — Apply host-residual correction (`apply_host_residual_correction`)
+
+The residual between the predicted sum and the measured host power is:
+
+```
+residual = host_power − sum_i(predicted_i)
+```
+
+This residual must be redistributed across cores. The distribution uses a weighted score per core that combines three signals, with the sign of the residual selecting which direction of each signal to use:
+
+| Signal | Weight | Meaning |
+|---|---|---|
+| `coef_score` | 0.45 | Core's share of rising (residual > 0) or falling (residual < 0) coefficient movement |
+| `delta_score` | 0.35 | Core's share of predicted-power movement in the direction opposing the residual |
+| `transition_score` | 0.15 | Whether the core just activated (residual > 0) or deactivated (residual < 0) |
+| `uncertainty` | 0.05 | Baseline: higher-uncertainty cores absorb a small share unconditionally |
+
+The weighted scores are normalised to sum to 1, then used to distribute the residual:
+
+```
+corrected_i = predicted_i + (normalized_score_i × residual)
+```
+
+The intuition: if the host power is higher than predicted, the correction should land mostly on cores whose coefficients just rose and which just became active — those are the most likely cause of the unaccounted power. If it is lower, it should land on cores whose coefficients fell and which just deactivated.
+
+---
+
+#### Stage 5 — Blend with reference (`blend_core_powers_with_reference`)
+
+After correction, each core's estimate is softly pulled toward the reference allocation. The blend weight per core is:
+
+```
+blend_i = clamp(0.12 × uncertainty_i + 0.08 × change_share_i + 0.2 × uncertainty_i × mismatch_i, 0, 0.2)
+final_i = corrected_i + blend_i × (reference_i − corrected_i)
+```
+
+The cap of 0.2 means the reference can move each core's estimate by at most 20% of the gap between the corrected value and the reference. This prevents the reference (which is a simple proportional split) from overriding the observer's accumulated state in steady conditions, while still allowing it to pull clearly drifted estimates back.
+
+---
+
+#### Stage 6 — Normalize to host (`normalize_core_powers_to_host`)
+
+The blended vector is rescaled so its sum exactly equals `host_power`:
+
+```
+scale = host_power / sum_i(blended_i)
+final_i = blended_i × scale
+```
+
+This hard constraint is the outer boundary of the observer. Whatever the predictor, corrector, and blender produced, the final output is always consistent with the measured host total.
+
+---
+
+#### `coef_to_power` update
+
+After the final powers are produced, the global scale factor is updated as a slow EMA:
+
+```
+coef_to_power = 0.8 × coef_to_power + 0.2 × (total_final_power / total_coef)
+```
+
+This is used by the predictor in the next cycle to seed newly activating cores.
+
+---
+
+#### Bootstrap (cold start)
+
+On the first sample there is no previous state to predict from. The reference allocation (the `coef^0.5` proportional split against `host_power`) is used directly, then normalized to the host total. `coef_to_power` is seeded from that initial state.
+
+---
+
+#### Summary
+
+| Stage | Method | Purpose |
+|---|---|---|
+| Predict | `predict_core_powers` | Advance each core from its own coefficient ratio; decouple cores from each other |
+| Reference | `build_reference_core_powers` | Compute a host-anchored `coef^0.5` split as the measurement signal |
+| Uncertainty | `update_core_uncertainty` | Track per-core distrust as an EMA; gates how aggressively correction and blending act |
+| Correct | `apply_host_residual_correction` | Redistribute `host − Σpredicted` to the cores most responsible, by uncertainty-weighted signal scores |
+| Blend | `blend_core_powers_with_reference` | Softly pull drifted estimates back toward the reference; capped at 20% of the gap |
+| Normalize | `normalize_core_powers_to_host` | Hard-enforce `Σfinal == host_power` |
+
+The remaining limitation of this approach is that the correction and blend are applied per-cycle but do not accumulate state about how persistently the estimate has deviated. A core that is consistently 10% too high will be nudged down each cycle, but the nudge size is the same on cycle 2 as it is on cycle 200. That persistent steady-state bias is what the successor (`v_diff_pid`) addresses with an integral term.
