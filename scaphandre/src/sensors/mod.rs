@@ -33,6 +33,12 @@ use sysinfo::{DiskExt, DiskType, ProcessExt};
 use time::unit::{self, Unit};
 use utils::{current_system_time_since_epoch, IProcess, ProcessTracker};
 
+// PID gain constants for the per-core power residual correction loop.
+const PID_KP: f64 = 0.4;
+const PID_KI: f64 = 0.05;
+const PID_KD: f64 = 0.0;
+const PID_INTEGRAL_CLAMP: f64 = 50_000.0; // microwatts
+
 // !!!!!!!!!!!!!!!!! Sensor !!!!!!!!!!!!!!!!!!!!!!!
 /// Sensor trait, the Sensor API.
 pub trait Sensor {
@@ -94,10 +100,10 @@ pub struct Topology {
     pub core_power_buffer: Vec<MultiValuedRecord>,
     /// Buffer of host power
     pub power_buffer: Vec<Record>,
-    /// A constant used to map coefficient diffs to core power diffs
-    pub coef_to_power: f64,
-    /// Per-core uncertainty used to decide which cores should absorb host-level correction
-    pub core_uncertainty: Vec<f64>,
+    /// Integral accumulator for the scalar host-residual PID loop.
+    core_pid_integral: f64,
+    /// Residual from the previous cycle, used for the derivative term.
+    last_residual: f64,
 }
 
 impl std::fmt::Debug for Topology {
@@ -212,8 +218,8 @@ impl Clone for Topology {
             core_coef_buffer: self.core_coef_buffer.clone(),
             core_power_buffer: self.core_power_buffer.clone(),
             power_buffer: self.power_buffer.clone(),
-            coef_to_power: self.coef_to_power,
-            core_uncertainty: self.core_uncertainty.clone(),
+            core_pid_integral: self.core_pid_integral,
+            last_residual: self.last_residual,
         }
     }
 }
@@ -243,8 +249,8 @@ impl Topology {
             core_coef_buffer: vec![],
             core_power_buffer: vec![],
             power_buffer: vec![],
-            coef_to_power: 0.0,
-            core_uncertainty: vec![],
+            core_pid_integral: 0.0,
+            last_residual: 0.0,
         }
     }
 
@@ -680,36 +686,96 @@ impl Topology {
         ))
     }
 
-    /// Computes the latest per-core power estimate using a predict/correct loop.
-    ///
-    /// The predictor advances each core from its previous state using only the local
-    /// coefficient evolution. The corrector then uses the measured host power as a hard
-    /// total constraint and distributes any residual according to per-core uncertainty.
-    ///
-    /// A nonlinear coefficient-based split is used only as a soft reference so that the
-    /// model can relax after a bad spike without falling back to the original hard
-    /// proportional-allocation failure mode.
+    fn sample_interval_seconds(&self) -> f64 {
+        let len = self.power_buffer.len();
+        if len < 2 {
+            return 1.0;
+        }
+        let last = &self.power_buffer[len - 1];
+        let prev = &self.power_buffer[len - 2];
+        (last.timestamp.as_secs_f64() - prev.timestamp.as_secs_f64()).max(1e-3)
+    }
+
+    fn nudge_core_powers_by_diff(
+        &self,
+        last_powers: &[f64],
+        coef_diffs: &[f64],
+        host_diff: f64,
+    ) -> Vec<f64> {
+        const CHURN_EPSILON: f64 = 1e-9;
+        let total_churn: f64 = coef_diffs.iter().map(|d| d.abs()).sum();
+        let n = last_powers.len();
+        last_powers
+            .iter()
+            .zip(coef_diffs.iter())
+            .map(|(prev_power, diff)| {
+                let weight = if total_churn > CHURN_EPSILON {
+                    diff / total_churn
+                } else {
+                    1.0 / n as f64
+                };
+                prev_power + (weight * host_diff)
+            })
+            .collect()
+    }
+
+    fn apply_pid_residual_correction(
+        &mut self,
+        nudged_powers: &[f64],
+        host_power: f64,
+        current_proportions: &[f64],
+        dt: f64,
+    ) -> Vec<f64> {
+        let predicted_sum: f64 = nudged_powers.iter().sum();
+        let residual = host_power - predicted_sum;
+
+        self.core_pid_integral = (self.core_pid_integral + residual * dt)
+            .clamp(-PID_INTEGRAL_CLAMP, PID_INTEGRAL_CLAMP);
+
+        let derivative = if dt > 0.0 {
+            (residual - self.last_residual) / dt
+        } else {
+            0.0
+        };
+        self.last_residual = residual;
+
+        let correction = (PID_KP * residual) + (PID_KI * self.core_pid_integral) + (PID_KD * derivative);
+
+        nudged_powers
+            .iter()
+            .zip(current_proportions.iter())
+            .map(|(power, proportion)| power + (correction * proportion))
+            .collect()
+    }
+
+    fn detect_core_transition(&self, last_powers: &[f64], current_coefs: &[f64]) -> bool {
+        last_powers.iter().zip(current_coefs.iter()).any(|(p, c)| {
+            (*p <= 1.0 && *c > 0.0) || (*p > 1.0 && *c <= 1e-9)
+        })
+    }
+
+    /// Computes the latest per-core power estimate using a diff-based nudge
+    /// followed by a scalar PID correction on the aggregate residual.
     pub fn read_core_powers_record(&mut self) -> Option<MultiValuedRecord> {
-        let host_power = self
-            .power_buffer
-            .last()
+        let host_power = self.power_buffer.last()
             .and_then(|r| r.value.parse::<f64>().ok())?;
+        let prev_host_power = if self.power_buffer.len() >= 2 {
+            self.power_buffer[self.power_buffer.len() - 2].value.parse::<f64>().ok()?
+        } else {
+            host_power
+        };
+        let host_diff = host_power - prev_host_power;
+
         let current_coefs = self.latest_core_coef_values()?;
         if current_coefs.is_empty() {
             return None;
         }
 
-        self.ensure_core_uncertainty_len(current_coefs.len());
-
+        // First sample: seed evenly.
         if self.core_power_buffer.is_empty() {
-            let reference = self
-                .build_reference_core_powers(host_power, &current_coefs)
-                .unwrap_or_else(|| {
-                    vec![host_power / current_coefs.len() as f64; current_coefs.len()]
-                });
-            let initial = self.normalize_core_powers_to_host(&reference, host_power);
-            self.update_coef_to_power_from_state(&initial, &current_coefs);
-            let units = vec![units::Unit::MicroWatt; initial.len()];
+            let n = current_coefs.len();
+            let initial = vec![host_power / n as f64; n];
+            let units = vec![units::Unit::MicroWatt; n];
             return Some(MultiValuedRecord::new(
                 current_system_time_since_epoch(),
                 initial.iter().map(|v| v.to_string()).collect(),
@@ -717,69 +783,28 @@ impl Topology {
             ));
         }
 
-        let last_powers = self.core_power_buffer.last().map(|r| {
-            r.values
-                .iter()
-                .map(|v| v.parse::<f64>().unwrap_or(0.0))
-                .collect::<Vec<f64>>()
-        })?;
-        let previous_coefs = self
-            .previous_core_coef_values()
-            .unwrap_or_else(|| current_coefs.clone());
-        let coef_diffs: Vec<f64> = current_coefs
-            .iter()
-            .zip(previous_coefs.iter())
-            .map(|(current, previous)| current - previous)
+        let last_powers: Vec<f64> = self.core_power_buffer.last()
+            .map(|r| r.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect())?;
+        let coef_diffs = self.get_core_coefficient_diffs()
+            .unwrap_or_else(|| vec![0.0; current_coefs.len()]);
+
+        if self.detect_core_transition(&last_powers, &current_coefs) {
+            self.core_pid_integral = 0.0;
+        }
+
+        let nudged = self.nudge_core_powers_by_diff(&last_powers, &coef_diffs, host_diff);
+        let current_proportions = self.get_core_proportions();
+        let dt = self.sample_interval_seconds();
+        let corrected = self.apply_pid_residual_correction(&nudged, host_power, &current_proportions, dt);
+
+        let final_powers: Vec<f64> = corrected.iter()
+            .map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 })
             .collect();
 
-        let predicted = self.predict_core_powers(&last_powers, &previous_coefs, &current_coefs);
-        let reference = self
-            .build_reference_core_powers(host_power, &current_coefs)
-            .unwrap_or_else(|| self.normalize_core_powers_to_host(&last_powers, host_power));
-        let uncertainty = self.update_core_uncertainty(
-            &last_powers,
-            &predicted,
-            &reference,
-            &current_coefs,
-            &coef_diffs,
-            host_power,
-        );
-        let corrected = self.apply_host_residual_correction(
-            &last_powers,
-            &predicted,
-            &current_coefs,
-            &coef_diffs,
-            &uncertainty,
-            host_power,
-        );
-        let blended = self.blend_core_powers_with_reference(
-            &corrected,
-            &reference,
-            &uncertainty,
-            &coef_diffs,
-            host_power,
-        );
-        let final_powers = self.normalize_core_powers_to_host(&blended, host_power);
-
-        self.update_coef_to_power_from_state(&final_powers, &current_coefs);
-
         debug!(
-            "CORE Observer host_power={host_power}, predicted={}, reference={}, final={}",
-            predicted
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-            reference
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-            final_powers
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
+            "CORE PID host_power={host_power}, sum={}, residual={}",
+            final_powers.iter().sum::<f64>(),
+            host_power - final_powers.iter().sum::<f64>(),
         );
 
         let units = vec![units::Unit::MicroWatt; final_powers.len()];
@@ -813,342 +838,6 @@ impl Topology {
                     .map(|value| value.parse::<f64>().unwrap_or(0.0))
                     .collect()
             })
-    }
-
-    fn ensure_core_uncertainty_len(&mut self, core_count: usize) {
-        if self.core_uncertainty.len() != core_count {
-            self.core_uncertainty = vec![0.05; core_count];
-        }
-    }
-
-    fn predict_core_powers(
-        &self,
-        last_powers: &[f64],
-        previous_coefs: &[f64],
-        current_coefs: &[f64],
-    ) -> Vec<f64> {
-        const COEF_EPSILON: f64 = 1e-9;
-        const RATIO_GAMMA: f64 = 0.75;
-        const MIN_RATIO: f64 = 0.25;
-        const MAX_RATIO: f64 = 4.0;
-        const NEW_CORE_GAIN: f64 = 0.2;
-
-        let total_previous_power: f64 = last_powers.iter().map(|power| power.max(0.0)).sum();
-        let total_previous_coef: f64 = previous_coefs.iter().map(|coef| coef.max(0.0)).sum();
-        let derived_scale = if total_previous_coef > COEF_EPSILON {
-            total_previous_power / total_previous_coef
-        } else {
-            0.0
-        };
-        let global_scale = if self.coef_to_power > 0.0 && derived_scale > 0.0 {
-            (self.coef_to_power + derived_scale) / 2.0
-        } else if self.coef_to_power > 0.0 {
-            self.coef_to_power
-        } else {
-            derived_scale
-        };
-
-        last_powers
-            .iter()
-            .zip(previous_coefs.iter())
-            .zip(current_coefs.iter())
-            .map(|((previous_power, previous_coef), current_coef)| {
-                let previous_power = previous_power.max(0.0);
-                let previous_coef = previous_coef.max(0.0);
-                let current_coef = current_coef.max(0.0);
-                if previous_coef > COEF_EPSILON {
-                    let ratio = (current_coef / previous_coef).clamp(MIN_RATIO, MAX_RATIO);
-                    previous_power * ratio.powf(RATIO_GAMMA)
-                } else if current_coef > 0.0 && global_scale > 0.0 {
-                    NEW_CORE_GAIN * global_scale * current_coef
-                } else {
-                    0.0
-                }
-            })
-            .collect()
-    }
-
-    fn build_reference_core_powers(
-        &self,
-        host_power: f64,
-        current_coefs: &[f64],
-    ) -> Option<Vec<f64>> {
-        const GAMMA: f64 = 0.5;
-
-        if current_coefs.is_empty() {
-            return None;
-        }
-
-        let weights: Vec<f64> = current_coefs
-            .iter()
-            .map(|coef| coef.max(0.0).powf(GAMMA))
-            .collect();
-        let total_weight: f64 = weights.iter().sum();
-        if total_weight <= 0.0 {
-            return None;
-        }
-
-        Some(
-            weights
-                .iter()
-                .map(|weight| host_power * (weight / total_weight))
-                .collect(),
-        )
-    }
-
-    fn update_core_uncertainty(
-        &mut self,
-        last_powers: &[f64],
-        predicted: &[f64],
-        reference: &[f64],
-        current_coefs: &[f64],
-        coef_diffs: &[f64],
-        host_power: f64,
-    ) -> Vec<f64> {
-        const MIN_UNCERTAINTY: f64 = 0.05;
-        const MAX_UNCERTAINTY: f64 = 1.0;
-        const DECAY: f64 = 0.4;
-
-        let abs_coef_total: f64 = coef_diffs.iter().map(|diff| diff.abs()).sum();
-        let host_scale = host_power.max(1.0);
-
-        for index in 0..self.core_uncertainty.len() {
-            let change_share = if abs_coef_total > 0.0 {
-                coef_diffs[index].abs() / abs_coef_total
-            } else {
-                0.0
-            };
-            let jump_score = ((predicted[index] - last_powers[index]).abs() / host_scale).min(1.0);
-            let activation_score = if last_powers[index] <= 1.0 && current_coefs[index] > 0.0 {
-                0.35
-            } else {
-                0.0
-            };
-            let mismatch_score = if self.core_uncertainty[index] > 0.2 {
-                ((predicted[index] - reference[index]).abs() / host_scale).min(1.0)
-            } else {
-                0.0
-            };
-            let fresh = (MIN_UNCERTAINTY
-                + (0.8 * change_share)
-                + (0.4 * jump_score)
-                + activation_score
-                + (0.3 * mismatch_score))
-                .clamp(MIN_UNCERTAINTY, MAX_UNCERTAINTY);
-            self.core_uncertainty[index] = ((DECAY * self.core_uncertainty[index])
-                + ((1.0 - DECAY) * fresh))
-                .clamp(MIN_UNCERTAINTY, MAX_UNCERTAINTY);
-        }
-
-        self.core_uncertainty.clone()
-    }
-
-    fn apply_host_residual_correction(
-        &self,
-        last_powers: &[f64],
-        predicted: &[f64],
-        current_coefs: &[f64],
-        coef_diffs: &[f64],
-        uncertainty: &[f64],
-        host_power: f64,
-    ) -> Vec<f64> {
-        let predicted_sum: f64 = predicted.iter().sum();
-        let residual = host_power - predicted_sum;
-        if residual.abs() < 1e-6 {
-            return predicted.to_vec();
-        }
-
-        let predicted_deltas: Vec<f64> = predicted
-            .iter()
-            .zip(last_powers.iter())
-            .map(|(prediction, previous)| prediction - previous)
-            .collect();
-        let positive_coef_signal: Vec<f64> = coef_diffs.iter().map(|diff| diff.max(0.0)).collect();
-        let negative_coef_signal: Vec<f64> =
-            coef_diffs.iter().map(|diff| (-diff).max(0.0)).collect();
-        let positive_delta_signal: Vec<f64> = predicted_deltas
-            .iter()
-            .map(|delta| delta.max(0.0))
-            .collect();
-        let negative_delta_signal: Vec<f64> = predicted_deltas
-            .iter()
-            .map(|delta| (-delta).max(0.0))
-            .collect();
-        let activation_signal: Vec<f64> = last_powers
-            .iter()
-            .zip(current_coefs.iter())
-            .map(|(previous_power, current_coef)| {
-                if *previous_power <= 1.0 && *current_coef > 0.0 {
-                    1.0
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        let deactivation_signal: Vec<f64> = last_powers
-            .iter()
-            .zip(current_coefs.iter())
-            .map(|(previous_power, current_coef)| {
-                if *previous_power > 1.0 && *current_coef <= 1e-9 {
-                    1.0
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-
-        let add_coef_total: f64 = positive_coef_signal.iter().sum();
-        let drop_coef_total: f64 = negative_coef_signal.iter().sum();
-        let add_delta_total: f64 = negative_delta_signal.iter().sum();
-        let drop_delta_total: f64 = positive_delta_signal.iter().sum();
-        let activation_total: f64 = activation_signal.iter().sum();
-        let deactivation_total: f64 = deactivation_signal.iter().sum();
-
-        let mut scores: Vec<f64> = predicted
-            .iter()
-            .enumerate()
-            .zip(uncertainty.iter())
-            .map(|((index, _), uncertainty)| {
-                let coef_score = if residual >= 0.0 {
-                    if add_coef_total > 0.0 {
-                        positive_coef_signal[index] / add_coef_total
-                    } else {
-                        0.0
-                    }
-                } else if drop_coef_total > 0.0 {
-                    negative_coef_signal[index] / drop_coef_total
-                } else {
-                    0.0
-                };
-
-                let delta_score = if residual >= 0.0 {
-                    if add_delta_total > 0.0 {
-                        negative_delta_signal[index] / add_delta_total
-                    } else {
-                        0.0
-                    }
-                } else if drop_delta_total > 0.0 {
-                    positive_delta_signal[index] / drop_delta_total
-                } else {
-                    0.0
-                };
-
-                let transition_score = if residual >= 0.0 {
-                    if activation_total > 0.0 {
-                        activation_signal[index] / activation_total
-                    } else {
-                        0.0
-                    }
-                } else if deactivation_total > 0.0 {
-                    deactivation_signal[index] / deactivation_total
-                } else if activation_total > 0.0 {
-                    activation_signal[index] / activation_total
-                } else {
-                    0.0
-                };
-
-                ((0.45 * coef_score)
-                    + (0.35 * delta_score)
-                    + (0.15 * transition_score)
-                    + (0.05 * uncertainty))
-                    .max(0.0)
-            })
-            .collect();
-
-        let score_total: f64 = scores.iter().sum();
-        if score_total <= 0.0 {
-            scores = uncertainty.to_vec();
-        }
-        let fallback_total: f64 = scores.iter().sum();
-        let normalized_weights = if fallback_total > 0.0 {
-            scores
-                .iter()
-                .map(|score| score / fallback_total)
-                .collect::<Vec<f64>>()
-        } else {
-            vec![1.0 / predicted.len() as f64; predicted.len()]
-        };
-
-        predicted
-            .iter()
-            .zip(normalized_weights.iter())
-            .map(|(prediction, weight)| prediction + (weight * residual))
-            .collect()
-    }
-
-    fn blend_core_powers_with_reference(
-        &self,
-        corrected: &[f64],
-        reference: &[f64],
-        uncertainty: &[f64],
-        coef_diffs: &[f64],
-        host_power: f64,
-    ) -> Vec<f64> {
-        const MAX_BLEND: f64 = 0.2;
-
-        let abs_coef_total: f64 = coef_diffs.iter().map(|diff| diff.abs()).sum();
-        let host_scale = host_power.max(1.0);
-
-        corrected
-            .iter()
-            .zip(reference.iter())
-            .zip(uncertainty.iter())
-            .zip(coef_diffs.iter())
-            .map(|(((corrected, reference), uncertainty), coef_diff)| {
-                let change_share = if abs_coef_total > 0.0 {
-                    coef_diff.abs() / abs_coef_total
-                } else {
-                    0.0
-                };
-                let mismatch = ((reference - corrected).abs() / host_scale).min(1.0);
-                let blend =
-                    ((0.12 * uncertainty) + (0.08 * change_share) + (0.2 * uncertainty * mismatch))
-                        .clamp(0.0, MAX_BLEND);
-                corrected + (blend * (reference - corrected))
-            })
-            .collect()
-    }
-
-    fn normalize_core_powers_to_host(&self, values: &[f64], host_power: f64) -> Vec<f64> {
-        let mut clamped = values
-            .iter()
-            .map(|value| {
-                if value.is_finite() {
-                    value.max(0.0)
-                } else {
-                    0.0
-                }
-            })
-            .collect::<Vec<f64>>();
-        if host_power <= 0.0 {
-            return vec![0.0; clamped.len()];
-        }
-
-        let total: f64 = clamped.iter().sum();
-        if total <= 0.0 {
-            return vec![host_power / clamped.len() as f64; clamped.len()];
-        }
-
-        let scale = host_power / total;
-        for value in &mut clamped {
-            *value *= scale;
-        }
-        clamped
-    }
-
-    fn update_coef_to_power_from_state(&mut self, powers: &[f64], coefs: &[f64]) {
-        let total_power: f64 = powers.iter().sum();
-        let total_coef: f64 = coefs.iter().map(|coef| coef.max(0.0)).sum();
-        if total_coef <= 0.0 {
-            return;
-        }
-
-        let derived_scale = total_power / total_coef;
-        self.coef_to_power = if self.coef_to_power > 0.0 {
-            (0.8 * self.coef_to_power) + (0.2 * derived_scale)
-        } else {
-            derived_scale
-        };
     }
 
     /// Computes the latest per-core power record and appends it to `core_power_buffer`.
