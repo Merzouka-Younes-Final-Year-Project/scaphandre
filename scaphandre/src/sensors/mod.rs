@@ -1794,6 +1794,8 @@ pub struct CPUSocket {
 
     /// Idle threshold for measurement of idle energy
     pub idle_percentage_threshold: f64,
+    /// Maximum value of the RAPL energy counter before it wraps, in microjoules.
+    pub rapl_max_uj: u64,
     ///
     #[allow(dead_code)]
     pub sensor_data: HashMap<String, String>,
@@ -1922,6 +1924,10 @@ impl CPUSocket {
             activation_idle_record_buffer: vec![],
             cpu_cores: vec![], // cores are instantiated on a later step
             stat_buffer: vec![],
+            rapl_max_uj: sensor_data
+                .get("max_energy_range_uj")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(u64::MAX),
             sensor_data,
             // idle_percentage_threshold: 0.95_f64,
             idle_percentage_threshold: 0.65_f64,
@@ -2239,15 +2245,11 @@ impl CPUSocket {
             if let (Ok(last_microjoules), Ok(previous_microjoules)) =
                 (last_rec_val.parse::<u64>(), prev_rec_val.parse::<u64>())
             {
-                let mut microjoules = 0;
-                if last_microjoules >= previous_microjoules {
-                    microjoules = last_microjoules.saturating_sub(previous_microjoules);
+                let microjoules = if last_microjoules >= previous_microjoules {
+                    last_microjoules.saturating_sub(previous_microjoules)
                 } else {
-                    debug!(
-                        "socket: previous_microjoules ({}) > last_microjoules ({})",
-                        previous_microjoules, last_microjoules
-                    );
-                }
+                    self.rapl_max_uj.saturating_sub(previous_microjoules).saturating_add(last_microjoules)
+                };
                 let time_diff =
                     last_record.timestamp.as_secs_f64() - previous_record.timestamp.as_secs_f64();
                 let microwatts = microjoules as f64 / time_diff;

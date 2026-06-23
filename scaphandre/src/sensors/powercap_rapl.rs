@@ -176,6 +176,9 @@ impl Sensor for PowercapRAPLSensor {
                     String::from("source_file"),
                     format!("{}/intel-rapl:{}/energy_uj", self.base_path, socket_id),
                 );
+                if let Ok(max) = fs::read_to_string(format!("{}/intel-rapl:{}/max_energy_range_uj", self.base_path, socket_id)) {
+                    sensor_data_for_socket.insert(String::from("max_energy_range_uj"), max.trim().to_string());
+                }
                 topo.safe_add_socket(
                     socket_id,
                     vec![],
@@ -255,6 +258,9 @@ impl Sensor for PowercapRAPLSensor {
                             String::from("source_file"),
                             format!("{}/intel-rapl:{}/energy_uj", self.base_path, socket_id),
                         );
+                        if let Ok(max) = fs::read_to_string(format!("{}/intel-rapl:{}/max_energy_range_uj", self.base_path, socket_id)) {
+                            sensor_data_for_socket.insert(String::from("max_energy_range_uj"), max.trim().to_string());
+                        }
                         topo.safe_add_socket(
                             socket_id,
                             vec![],
