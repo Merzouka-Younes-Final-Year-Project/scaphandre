@@ -5,8 +5,8 @@
 
 #[cfg(target_os = "windows")]
 pub mod msr_rapl;
-use aya::maps::{Array, MapData, RingBuf};
 use aya::Ebpf;
+use aya::maps::{Array, MapData, RingBuf};
 use docker_sync::network;
 #[cfg(target_os = "windows")]
 use msr_rapl::get_msr_value;
@@ -14,24 +14,22 @@ use msr_rapl::get_msr_value;
 pub mod powercap_rapl;
 pub mod units;
 pub mod utils;
-use perf_event::events::Hardware;
-use perf_event::{Builder, Counter};
 #[cfg(target_os = "linux")]
 use procfs::{CpuInfo, CpuTime, KernelStats};
 use protobuf::Clear;
 use scaphandre_common::{CpuEventType, CpuStateEvent};
+use time::unit::{self, Unit};
 use std::cell::RefCell;
-use std::cmp::{max, min};
+use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration, vec};
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::FileExt;
-use std::{
-    collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration, vec,
-};
 #[allow(unused_imports)]
 use sysinfo::{CpuExt, Pid, System, SystemExt};
 use sysinfo::{DiskExt, DiskType, ProcessExt};
-use time::unit::{self, Unit};
 use utils::{current_system_time_since_epoch, IProcess, ProcessTracker};
+use std::cmp::{max, min};
+use perf_event::{Builder, Counter};
+use perf_event::events::Hardware;
 
 // !!!!!!!!!!!!!!!!! Sensor !!!!!!!!!!!!!!!!!!!!!!!
 /// Sensor trait, the Sensor API.
@@ -96,8 +94,6 @@ pub struct Topology {
     pub power_buffer: Vec<Record>,
     /// A constant used to map coefficient diffs to core power diffs
     pub coef_to_power: f64,
-    /// Per-core uncertainty used to decide which cores should absorb host-level correction
-    pub core_uncertainty: Vec<f64>,
 }
 
 impl std::fmt::Debug for Topology {
@@ -111,10 +107,7 @@ impl std::fmt::Debug for Topology {
             .field("domains_names", &self.domains_names)
             .field("_sensor_data", &self._sensor_data)
             .field("ebpf", &self.ebpf)
-            .field(
-                "cpu_state_buffer",
-                &self.cpu_state_buffer.as_ref().map(|_| "eBPF Ring Buffer"),
-            )
+            .field("cpu_state_buffer", &self.cpu_state_buffer.as_ref().map(|_| "eBPF Ring Buffer"))
             .finish()
     }
 }
@@ -140,7 +133,7 @@ impl RecordGenerator for Topology {
         }
 
         if !self.record_buffer.is_empty() {
-            RecordGenerator::clean_old_records(self);
+          RecordGenerator::clean_old_records(self);
         }
     }
 
@@ -213,7 +206,6 @@ impl Clone for Topology {
             core_power_buffer: self.core_power_buffer.clone(),
             power_buffer: self.power_buffer.clone(),
             coef_to_power: self.coef_to_power,
-            core_uncertainty: self.core_uncertainty.clone(),
         }
     }
 }
@@ -244,7 +236,6 @@ impl Topology {
             core_power_buffer: vec![],
             power_buffer: vec![],
             coef_to_power: 0.0,
-            core_uncertainty: vec![],
         }
     }
 
@@ -271,8 +262,7 @@ impl Topology {
         #[cfg(target_os = "linux")]
         let cpuinfo = CpuInfo::new().unwrap();
         for (idx, c) in (0_u16..).zip(sysinfo_cores.iter()) {
-            let id: u16 = c
-                .name()
+            let id: u16 = c.name()
                 .trim_start_matches(|ch: char| !ch.is_ascii_digit())
                 .parse()
                 .unwrap_or(idx);
@@ -429,20 +419,16 @@ impl Topology {
     fn refresh_activation_idle_records(&mut self) {
         if let Some(ref mut buffer) = self.cpu_state_buffer {
             for e in crate::bpf::drain_cpu_state_events(buffer) {
-                self.activation_idle_buffer
-                    .entry(e.socket_id)
-                    .or_insert(vec![])
-                    .push(e);
+                self.activation_idle_buffer.entry(e.socket_id).or_insert(vec![]).push(e);
             }
         }
     }
 
     /// Return and clear socket activation and idle records
     fn get_activation_idle_records(&mut self, socket: u16) -> Vec<CpuStateEvent> {
-        self.activation_idle_buffer
-            .remove(&socket)
-            .unwrap_or_default()
+        self.activation_idle_buffer.remove(&socket).unwrap_or_default()
     }
+
 }
 
 #[cfg(target_os = "linux")]
@@ -475,8 +461,7 @@ fn populate_cpu_to_socket_map(ebpf: &mut Ebpf) -> Result<(), Box<dyn Error>> {
 impl Topology {
     /// Returns the set of cores in all sockets
     pub fn get_cores(&self) -> Vec<CPUCore> {
-        let mut cores = self
-            .sockets
+        let mut cores = self.sockets
             .iter()
             .flat_map(|s| s.cpu_cores.iter().cloned())
             .collect::<Vec<CPUCore>>();
@@ -490,16 +475,14 @@ impl Topology {
             .map(|c| {
                 if let Some(metrics) = c.get_core_metrics_delta() {
                     if metrics.mperf > 0 {
-                        (1_f64 + metrics.ipc)
-                            * (metrics.aperf as f64 * (metrics.aperf as f64 / metrics.mperf as f64))
+                        (1_f64 + metrics.ipc) * (metrics.aperf as f64 * (metrics.aperf as f64 / metrics.mperf as f64))
                     } else {
                         0.0
                     }
                 } else {
                     0_f64
                 }
-            })
-            .collect::<Vec<f64>>()
+            }).collect::<Vec<f64>>()
     }
 
     pub fn get_core_proportions(&self) -> Vec<f64> {
@@ -507,29 +490,17 @@ impl Topology {
         let total_coefs: f64 = coefs.iter().sum();
         coefs
             .iter()
-            .map(|c| {
-                if total_coefs != 0_f64 {
-                    c / total_coefs
-                } else {
-                    0_f64
-                }
-            })
+            .map(|c| if total_coefs != 0_f64 { c/total_coefs } else { 0_f64 })
             .collect::<Vec<f64>>()
     }
-
+    
     /// Returns a MultiValuedRecord instance containing the per-core power consumed between
     /// last and previous measurement, in microwatts.
     pub fn get_proportional_core_diff_power_microwatts(&self) -> Option<MultiValuedRecord> {
-        if let Some(conso) = self
-            .get_records_diff_power_microwatts()
-            .and_then(|r| r.value.parse::<f64>().ok())
-        {
+        if let Some(conso) = self.get_records_diff_power_microwatts()
+            .and_then(|r| r.value.parse::<f64>().ok()) {
             debug!("Using formula v_enhanced_ipc_aperf_aperf_div_mperf");
-            let energies = self
-                .get_core_proportions()
-                .iter()
-                .map(|p| p * conso)
-                .collect::<Vec<f64>>();
+            let energies = self.get_core_proportions().iter().map(|p| p * conso).collect::<Vec<f64>>();
             Some(MultiValuedRecord::new(
                 current_system_time_since_epoch(),
                 energies.iter().map(|c| c.to_string()).collect(),
@@ -540,24 +511,15 @@ impl Topology {
         }
     }
 
+
     // This part is for core coefs
     fn read_core_coefs_record(&self) -> Result<MultiValuedRecord, Box<dyn Error>> {
         let coefs = self.get_core_coefs();
-        debug!(
-            "CORE COEFS: {}",
-            coefs
-                .iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<String>>()
-                .join(", ")
-        );
+        debug!("CORE COEFS: {}", coefs.iter().map(|c| c.to_string()).collect::<Vec<String>>().join(", "));
         Ok(MultiValuedRecord::new(
             current_system_time_since_epoch(),
             coefs.iter().map(|c| c.to_string()).collect::<Vec<String>>(),
-            coefs
-                .iter()
-                .map(|_| units::Unit::Numeric)
-                .collect::<Vec<units::Unit>>(),
+            coefs.iter().map(|_| units::Unit::Numeric).collect::<Vec<units::Unit>>(),
         ))
     }
 
@@ -592,10 +554,9 @@ impl Topology {
 
     /// Returns a copy of all records in `core_coef_buffer`.
     fn get_core_coefs_records_passive(&self) -> Vec<MultiValuedRecord> {
-        self.core_coef_buffer
-            .iter()
-            .map(|r| MultiValuedRecord::new(r.timestamp, r.values.clone(), r.units.clone()))
-            .collect()
+        self.core_coef_buffer.iter().map(|r| {
+            MultiValuedRecord::new(r.timestamp, r.values.clone(), r.units.clone())
+        }).collect()
     }
 
     /// Returns the signed per-core coefficient change between the last two records in
@@ -607,16 +568,12 @@ impl Topology {
         }
         let last = self.core_coef_buffer.last().unwrap();
         let prev = &self.core_coef_buffer[len - 2];
-        let diffs: Vec<String> = last
-            .values
-            .iter()
-            .zip(prev.values.iter())
+        let diffs: Vec<String> = last.values.iter().zip(prev.values.iter())
             .map(|(l, p)| {
                 let lv = l.parse::<f64>().unwrap_or(0.0);
                 let pv = p.parse::<f64>().unwrap_or(0.0);
                 (lv - pv).to_string()
-            })
-            .collect();
+            }).collect();
         let units = last.units.clone();
         Some(MultiValuedRecord::new(last.timestamp, diffs, units))
     }
@@ -656,10 +613,9 @@ impl Topology {
 
     /// Returns a copy of all records in `power_buffer`.
     fn get_power_records_passive(&self) -> Vec<Record> {
-        self.power_buffer
-            .iter()
-            .map(|r| Record::new(r.timestamp, r.value.clone(), units::Unit::MicroWatt))
-            .collect()
+        self.power_buffer.iter().map(|r| {
+            Record::new(r.timestamp, r.value.clone(), units::Unit::MicroWatt)
+        }).collect()
     }
 
     /// Returns the signed change in host power between the last two entries in `power_buffer`,
@@ -673,482 +629,149 @@ impl Topology {
         let prev = &self.power_buffer[len - 2];
         let lv = last.value.trim().parse::<i64>().ok()?;
         let pv = prev.value.trim().parse::<i64>().ok()?;
-        Some(Record::new(
-            last.timestamp,
-            (lv - pv).to_string(),
-            units::Unit::MicroWatt,
-        ))
+        Some(Record::new(last.timestamp, (lv - pv).to_string(), units::Unit::MicroWatt))
     }
 
-    /// Computes the latest per-core power estimate using a predict/correct loop.
+    /// Computes the per-core power consumed since the previous measurement.
     ///
-    /// The predictor advances each core from its previous state using only the local
-    /// coefficient evolution. The corrector then uses the measured host power as a hard
-    /// total constraint and distributes any residual according to per-core uncertainty.
+    /// # Method overview
     ///
-    /// A nonlinear coefficient-based split is used only as a soft reference so that the
-    /// model can relax after a bad spike without falling back to the original hard
-    /// proportional-allocation failure mode.
+    /// Each refresh cycle produces a *coefficient* per core:
+    /// `coef = (1 + IPC) * APERF * (APERF / MPERF)`
+    /// where APERF tracks actual performance, MPERF tracks maximum performance, and IPC
+    /// (instructions per cycle) captures execution efficiency. The coefficient is therefore
+    /// proportional to the core's effective computational throughput in that interval.
+    ///
+    /// When the host-level power changes between two intervals (`power_delta != 0`), the
+    /// algorithm attributes that change to individual cores as follows:
+    ///
+    /// **Case 1 – net system activity is non-zero (`net_coef_change != 0`)**  
+    /// The constraint is: `sum_i(power_change_i) == power_delta`.  
+    /// Each core's power change is assumed proportional to its *signed* coefficient delta,
+    /// so `power_change_i = (coef_diff_i / abs_coef_total) * abs_power_delta_total`.  
+    /// Substituting into the constraint and solving for `abs_power_delta_total` gives:
+    /// `abs_power_delta_total = (abs_coef_total / net_coef_change) * power_delta`.
+    ///
+    /// **Case 2 – power changed but net activity cancels (`net_coef_change == 0`)**  
+    /// The power shift is unrelated to net core activity. Each core's power is updated using
+    /// the same proportional formula applied to its coefficient change, but the unknown
+    /// `abs_power_delta_total` is derived from the constraint
+    /// `sum_i(power_change_i) == 0` instead (see the `abs_coef_total != 0` branch below).
+    ///
+    /// **Case 3 – power unchanged (`power_delta == 0`)**  
+    /// The zero-change constraint is used to solve for `abs_power_delta_total` in the same
+    /// way as Case 2.
+    ///
+    /// In all cases `coef_to_power = abs_power_delta_total / abs_coef_total` is maintained
+    /// as a running average to provide a fallback estimate when information is unavailable.
     pub fn read_core_powers_record(&mut self) -> Option<MultiValuedRecord> {
-        let host_power = self
-            .power_buffer
-            .last()
-            .and_then(|r| r.value.parse::<f64>().ok())?;
-        let current_coefs = self.latest_core_coef_values()?;
-        if current_coefs.is_empty() {
-            return None;
-        }
-
-        self.ensure_core_uncertainty_len(current_coefs.len());
-
         if self.core_power_buffer.is_empty() {
-            let reference = self
-                .build_reference_core_powers(host_power, &current_coefs)
-                .unwrap_or_else(|| {
-                    vec![host_power / current_coefs.len() as f64; current_coefs.len()]
+            return self.get_proportional_core_diff_power_microwatts();
+        }
+        if let Some(coef_diffs) = self.get_records_diff_coefs()
+            .map(|r| r.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect::<Vec<f64>>())
+        {
+            debug!("CORE coef diffs: {}", coef_diffs.iter().map(|c| c.to_string()).collect::<Vec<String>>().join(", "));
+            if let Some(power_delta) = self.get_records_diff_power_diff_microwatts()
+                .as_ref()
+                .and_then(|r| r.value.parse::<i64>().ok())
+            {
+                let last_powers = self.core_power_buffer.last().map(|r| {
+                    r.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect::<Vec<f64>>()
                 });
-            let initial = self.normalize_core_powers_to_host(&reference, host_power);
-            self.update_coef_to_power_from_state(&initial, &current_coefs);
-            let units = vec![units::Unit::MicroWatt; initial.len()];
-            return Some(MultiValuedRecord::new(
-                current_system_time_since_epoch(),
-                initial.iter().map(|v| v.to_string()).collect(),
-                units,
-            ));
+                debug!("CORE Last Powers: {}", last_powers.as_ref().unwrap_or(&vec![]).iter().map(|v| v.to_string()).collect::<Vec<String>>().join(", "));
+                let last_powers = last_powers?;
+
+                let abs_coef_total: f64 = coef_diffs.iter().map(|c| c.abs()).sum();
+
+                let result = if power_delta != 0 {
+                    if abs_coef_total == 0.0 {
+                        return self.core_power_buffer.last().cloned();
+                    }
+                    self.compute_core_power_changes_from_delta(&coef_diffs, power_delta, abs_coef_total)
+                        .or_else(|| self.compute_core_power_changes_from_anchor(&coef_diffs, abs_coef_total))
+                } else {
+                    self.compute_core_power_changes_from_anchor(&coef_diffs, abs_coef_total)
+                };
+
+                if let Some((core_power_changes, abs_power_delta_total)) = result {
+                    self.coef_to_power = (self.coef_to_power + (abs_power_delta_total / abs_coef_total)) / 2.0;
+                    let new_values: Vec<String> = last_powers
+                        .iter()
+                        .zip(core_power_changes.iter())
+                        .map(|(prev, delta)| (prev + delta).to_string())
+                        .collect();
+                    debug!("CORE New values (power_delta={power_delta}): {}", new_values.join(", "));
+                    let units = vec![units::Unit::MicroWatt; new_values.len()];
+                    return Some(MultiValuedRecord::new(current_system_time_since_epoch(), new_values, units));
+                }
+            }
         }
-
-        let last_powers = self.core_power_buffer.last().map(|r| {
-            r.values
-                .iter()
-                .map(|v| v.parse::<f64>().unwrap_or(0.0))
-                .collect::<Vec<f64>>()
-        })?;
-        let previous_coefs = self
-            .previous_core_coef_values()
-            .unwrap_or_else(|| current_coefs.clone());
-        let coef_diffs: Vec<f64> = current_coefs
-            .iter()
-            .zip(previous_coefs.iter())
-            .map(|(current, previous)| current - previous)
-            .collect();
-
-        let predicted = self.predict_core_powers(&last_powers, &previous_coefs, &current_coefs);
-        let reference = self
-            .build_reference_core_powers(host_power, &current_coefs)
-            .unwrap_or_else(|| self.normalize_core_powers_to_host(&last_powers, host_power));
-        let uncertainty = self.update_core_uncertainty(
-            &last_powers,
-            &predicted,
-            &reference,
-            &current_coefs,
-            &coef_diffs,
-            host_power,
-        );
-        let corrected = self.apply_host_residual_correction(
-            &last_powers,
-            &predicted,
-            &current_coefs,
-            &coef_diffs,
-            &uncertainty,
-            host_power,
-        );
-        let blended = self.blend_core_powers_with_reference(
-            &corrected,
-            &reference,
-            &uncertainty,
-            &coef_diffs,
-            host_power,
-        );
-        let final_powers = self.normalize_core_powers_to_host(&blended, host_power);
-
-        self.update_coef_to_power_from_state(&final_powers, &current_coefs);
-
-        debug!(
-            "CORE Observer host_power={host_power}, predicted={}, reference={}, final={}",
-            predicted
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-            reference
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-            final_powers
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-        );
-
-        let units = vec![units::Unit::MicroWatt; final_powers.len()];
-        Some(MultiValuedRecord::new(
-            current_system_time_since_epoch(),
-            final_powers.iter().map(|v| v.to_string()).collect(),
-            units,
-        ))
+        debug!("CORE returning old values: {}", self.core_power_buffer.last().map(|r| r.values.clone()).unwrap_or(vec![]).join(", "));
+        self.core_power_buffer.last().cloned()
     }
 
-    fn latest_core_coef_values(&self) -> Option<Vec<f64>> {
-        self.core_coef_buffer.last().map(|record| {
-            record
-                .values
-                .iter()
-                .map(|value| value.parse::<f64>().unwrap_or(0.0))
-                .collect()
-        })
-    }
-
-    fn previous_core_coef_values(&self) -> Option<Vec<f64>> {
-        if self.core_coef_buffer.len() < 2 {
+    /// Case 1: `power_delta != 0` and `net_coef_change != 0`.
+    /// Returns `(per_core_power_changes, abs_power_delta_total)` or `None` if `net_coef_change == 0`.
+    fn compute_core_power_changes_from_delta(
+        &self,
+        coef_diffs: &[f64],
+        power_delta: i64,
+        abs_coef_total: f64,
+    ) -> Option<(Vec<f64>, f64)> {
+        let net_coef_change: f64 = coef_diffs.iter().sum();
+        if net_coef_change == 0.0 {
             return None;
         }
-        self.core_coef_buffer
-            .get(self.core_coef_buffer.len() - 2)
-            .map(|record| {
-                record
-                    .values
-                    .iter()
-                    .map(|value| value.parse::<f64>().unwrap_or(0.0))
-                    .collect()
-            })
+        let abs_power_delta_total = (abs_coef_total / net_coef_change) * power_delta as f64;
+        let changes = coef_diffs.iter().map(|c| (c / abs_coef_total) * abs_power_delta_total).collect::<Vec<f64>>();
+        // Apply correction to ground the changes to host power
+        // The idea is to simply using the coefficient that maps coefficient delta to power change
+        // which is in this case abs_power_delta_total / abs_coef_total I would estimate the host
+        // power delta using the net_coef_change, and using the ratio of the estimation to the actual
+        // power_delta I can know how much to correct each measurement
+        let estimated_delta_power = (abs_power_delta_total / abs_coef_total) * net_coef_change;
+        let changes: Vec<f64> = changes.iter().map(|c| c * power_delta as f64 / estimated_delta_power).collect();
+        // AI: TODO: Make the naming of this constant, keep power_delta for host level power change
+        // and power change for core level power change, so this is probably better as
+        // abs_power_change_total or better total_power_change_magnitude since this is what it
+        // reflects
+        let abs_power_delta_total: f64 = changes.iter().map(|c| c.abs()).sum();
+
+        debug!("CORE Power Changes (delta path, power_delta={power_delta}, net_coef_change={net_coef_change}): {:?}", changes);
+        Some((changes, abs_power_delta_total))
     }
 
-    fn ensure_core_uncertainty_len(&mut self, core_count: usize) {
-        if self.core_uncertainty.len() != core_count {
-            self.core_uncertainty = vec![0.05; core_count];
-        }
-    }
-
-    fn predict_core_powers(
+    /// Cases 2 & 3: `power_delta == 0` or `net_coef_change == 0`.
+    /// Estimates `abs_power_delta_total` using the anchor-core (core 0) and `coef_to_power`.
+    /// Returns `(per_core_power_changes, abs_power_delta_total)` or `None` for degenerate inputs.
+    fn compute_core_power_changes_from_anchor(
         &self,
-        last_powers: &[f64],
-        previous_coefs: &[f64],
-        current_coefs: &[f64],
-    ) -> Vec<f64> {
-        const COEF_EPSILON: f64 = 1e-9;
-        const RATIO_GAMMA: f64 = 0.75;
-        const MIN_RATIO: f64 = 0.25;
-        const MAX_RATIO: f64 = 4.0;
-        const NEW_CORE_GAIN: f64 = 0.2;
-
-        let total_previous_power: f64 = last_powers.iter().map(|power| power.max(0.0)).sum();
-        let total_previous_coef: f64 = previous_coefs.iter().map(|coef| coef.max(0.0)).sum();
-        let derived_scale = if total_previous_coef > COEF_EPSILON {
-            total_previous_power / total_previous_coef
-        } else {
-            0.0
-        };
-        let global_scale = if self.coef_to_power > 0.0 && derived_scale > 0.0 {
-            (self.coef_to_power + derived_scale) / 2.0
-        } else if self.coef_to_power > 0.0 {
-            self.coef_to_power
-        } else {
-            derived_scale
-        };
-
-        last_powers
-            .iter()
-            .zip(previous_coefs.iter())
-            .zip(current_coefs.iter())
-            .map(|((previous_power, previous_coef), current_coef)| {
-                let previous_power = previous_power.max(0.0);
-                let previous_coef = previous_coef.max(0.0);
-                let current_coef = current_coef.max(0.0);
-                if previous_coef > COEF_EPSILON {
-                    let ratio = (current_coef / previous_coef).clamp(MIN_RATIO, MAX_RATIO);
-                    previous_power * ratio.powf(RATIO_GAMMA)
-                } else if current_coef > 0.0 && global_scale > 0.0 {
-                    NEW_CORE_GAIN * global_scale * current_coef
-                } else {
-                    0.0
-                }
-            })
-            .collect()
-    }
-
-    fn build_reference_core_powers(
-        &self,
-        host_power: f64,
-        current_coefs: &[f64],
-    ) -> Option<Vec<f64>> {
-        const GAMMA: f64 = 0.5;
-
-        if current_coefs.is_empty() {
+        coef_diffs: &[f64],
+        abs_coef_total: f64,
+    ) -> Option<(Vec<f64>, f64)> {
+        if abs_coef_total == 0.0 {
             return None;
         }
-
-        let weights: Vec<f64> = current_coefs
-            .iter()
-            .map(|coef| coef.max(0.0).powf(GAMMA))
-            .collect();
-        let total_weight: f64 = weights.iter().sum();
-        if total_weight <= 0.0 {
+        let mut iter = coef_diffs.iter();
+        let selected_coef = iter.next()?;
+        let s: f64 = iter.sum();
+        if s == 0.0 {
             return None;
         }
+        let selected_power = self.coef_to_power * selected_coef;
+        let abs_power_delta_total = -selected_power * (abs_coef_total / s);
+        let changes: Vec<f64> = coef_diffs.iter().map(|c| (c / abs_coef_total) * abs_power_delta_total).collect();
 
-        Some(
-            weights
-                .iter()
-                .map(|weight| host_power * (weight / total_weight))
-                .collect(),
-        )
-    }
+        // This is effectively the same as in compute_core_power_changes_from_delta but instead of 
+        // having a good measured reference host delta power, we just assume our coef_to_power is
+        // correct enough to use as the reference
+        let estimated_delta_power = (abs_power_delta_total / abs_coef_total) * selected_coef;
+        let changes: Vec<f64> = changes.iter().map(|c| c * selected_power / estimated_delta_power).collect();
+        let abs_power_delta_total: f64 = changes.iter().map(|c| c.abs()).sum();
 
-    fn update_core_uncertainty(
-        &mut self,
-        last_powers: &[f64],
-        predicted: &[f64],
-        reference: &[f64],
-        current_coefs: &[f64],
-        coef_diffs: &[f64],
-        host_power: f64,
-    ) -> Vec<f64> {
-        const MIN_UNCERTAINTY: f64 = 0.05;
-        const MAX_UNCERTAINTY: f64 = 1.0;
-        const DECAY: f64 = 0.4;
-
-        let abs_coef_total: f64 = coef_diffs.iter().map(|diff| diff.abs()).sum();
-        let host_scale = host_power.max(1.0);
-
-        for index in 0..self.core_uncertainty.len() {
-            let change_share = if abs_coef_total > 0.0 {
-                coef_diffs[index].abs() / abs_coef_total
-            } else {
-                0.0
-            };
-            let jump_score = ((predicted[index] - last_powers[index]).abs() / host_scale).min(1.0);
-            let activation_score = if last_powers[index] <= 1.0 && current_coefs[index] > 0.0 {
-                0.35
-            } else {
-                0.0
-            };
-            let mismatch_score = if self.core_uncertainty[index] > 0.2 {
-                ((predicted[index] - reference[index]).abs() / host_scale).min(1.0)
-            } else {
-                0.0
-            };
-            let fresh = (MIN_UNCERTAINTY
-                + (0.8 * change_share)
-                + (0.4 * jump_score)
-                + activation_score
-                + (0.3 * mismatch_score))
-                .clamp(MIN_UNCERTAINTY, MAX_UNCERTAINTY);
-            self.core_uncertainty[index] = ((DECAY * self.core_uncertainty[index])
-                + ((1.0 - DECAY) * fresh))
-                .clamp(MIN_UNCERTAINTY, MAX_UNCERTAINTY);
-        }
-
-        self.core_uncertainty.clone()
-    }
-
-    fn apply_host_residual_correction(
-        &self,
-        last_powers: &[f64],
-        predicted: &[f64],
-        current_coefs: &[f64],
-        coef_diffs: &[f64],
-        uncertainty: &[f64],
-        host_power: f64,
-    ) -> Vec<f64> {
-        let predicted_sum: f64 = predicted.iter().sum();
-        let residual = host_power - predicted_sum;
-        if residual.abs() < 1e-6 {
-            return predicted.to_vec();
-        }
-
-        let predicted_deltas: Vec<f64> = predicted
-            .iter()
-            .zip(last_powers.iter())
-            .map(|(prediction, previous)| prediction - previous)
-            .collect();
-        let positive_coef_signal: Vec<f64> = coef_diffs.iter().map(|diff| diff.max(0.0)).collect();
-        let negative_coef_signal: Vec<f64> =
-            coef_diffs.iter().map(|diff| (-diff).max(0.0)).collect();
-        let positive_delta_signal: Vec<f64> = predicted_deltas
-            .iter()
-            .map(|delta| delta.max(0.0))
-            .collect();
-        let negative_delta_signal: Vec<f64> = predicted_deltas
-            .iter()
-            .map(|delta| (-delta).max(0.0))
-            .collect();
-        let activation_signal: Vec<f64> = last_powers
-            .iter()
-            .zip(current_coefs.iter())
-            .map(|(previous_power, current_coef)| {
-                if *previous_power <= 1.0 && *current_coef > 0.0 {
-                    1.0
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        let deactivation_signal: Vec<f64> = last_powers
-            .iter()
-            .zip(current_coefs.iter())
-            .map(|(previous_power, current_coef)| {
-                if *previous_power > 1.0 && *current_coef <= 1e-9 {
-                    1.0
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-
-        let add_coef_total: f64 = positive_coef_signal.iter().sum();
-        let drop_coef_total: f64 = negative_coef_signal.iter().sum();
-        let add_delta_total: f64 = negative_delta_signal.iter().sum();
-        let drop_delta_total: f64 = positive_delta_signal.iter().sum();
-        let activation_total: f64 = activation_signal.iter().sum();
-        let deactivation_total: f64 = deactivation_signal.iter().sum();
-
-        let mut scores: Vec<f64> = predicted
-            .iter()
-            .enumerate()
-            .zip(uncertainty.iter())
-            .map(|((index, _), uncertainty)| {
-                let coef_score = if residual >= 0.0 {
-                    if add_coef_total > 0.0 {
-                        positive_coef_signal[index] / add_coef_total
-                    } else {
-                        0.0
-                    }
-                } else if drop_coef_total > 0.0 {
-                    negative_coef_signal[index] / drop_coef_total
-                } else {
-                    0.0
-                };
-
-                let delta_score = if residual >= 0.0 {
-                    if add_delta_total > 0.0 {
-                        negative_delta_signal[index] / add_delta_total
-                    } else {
-                        0.0
-                    }
-                } else if drop_delta_total > 0.0 {
-                    positive_delta_signal[index] / drop_delta_total
-                } else {
-                    0.0
-                };
-
-                let transition_score = if residual >= 0.0 {
-                    if activation_total > 0.0 {
-                        activation_signal[index] / activation_total
-                    } else {
-                        0.0
-                    }
-                } else if deactivation_total > 0.0 {
-                    deactivation_signal[index] / deactivation_total
-                } else if activation_total > 0.0 {
-                    activation_signal[index] / activation_total
-                } else {
-                    0.0
-                };
-
-                ((0.45 * coef_score)
-                    + (0.35 * delta_score)
-                    + (0.15 * transition_score)
-                    + (0.05 * uncertainty))
-                    .max(0.0)
-            })
-            .collect();
-
-        let score_total: f64 = scores.iter().sum();
-        if score_total <= 0.0 {
-            scores = uncertainty.to_vec();
-        }
-        let fallback_total: f64 = scores.iter().sum();
-        let normalized_weights = if fallback_total > 0.0 {
-            scores
-                .iter()
-                .map(|score| score / fallback_total)
-                .collect::<Vec<f64>>()
-        } else {
-            vec![1.0 / predicted.len() as f64; predicted.len()]
-        };
-
-        predicted
-            .iter()
-            .zip(normalized_weights.iter())
-            .map(|(prediction, weight)| prediction + (weight * residual))
-            .collect()
-    }
-
-    fn blend_core_powers_with_reference(
-        &self,
-        corrected: &[f64],
-        reference: &[f64],
-        uncertainty: &[f64],
-        coef_diffs: &[f64],
-        host_power: f64,
-    ) -> Vec<f64> {
-        const MAX_BLEND: f64 = 0.2;
-
-        let abs_coef_total: f64 = coef_diffs.iter().map(|diff| diff.abs()).sum();
-        let host_scale = host_power.max(1.0);
-
-        corrected
-            .iter()
-            .zip(reference.iter())
-            .zip(uncertainty.iter())
-            .zip(coef_diffs.iter())
-            .map(|(((corrected, reference), uncertainty), coef_diff)| {
-                let change_share = if abs_coef_total > 0.0 {
-                    coef_diff.abs() / abs_coef_total
-                } else {
-                    0.0
-                };
-                let mismatch = ((reference - corrected).abs() / host_scale).min(1.0);
-                let blend =
-                    ((0.12 * uncertainty) + (0.08 * change_share) + (0.2 * uncertainty * mismatch))
-                        .clamp(0.0, MAX_BLEND);
-                corrected + (blend * (reference - corrected))
-            })
-            .collect()
-    }
-
-    fn normalize_core_powers_to_host(&self, values: &[f64], host_power: f64) -> Vec<f64> {
-        let mut clamped = values
-            .iter()
-            .map(|value| {
-                if value.is_finite() {
-                    value.max(0.0)
-                } else {
-                    0.0
-                }
-            })
-            .collect::<Vec<f64>>();
-        if host_power <= 0.0 {
-            return vec![0.0; clamped.len()];
-        }
-
-        let total: f64 = clamped.iter().sum();
-        if total <= 0.0 {
-            return vec![host_power / clamped.len() as f64; clamped.len()];
-        }
-
-        let scale = host_power / total;
-        for value in &mut clamped {
-            *value *= scale;
-        }
-        clamped
-    }
-
-    fn update_coef_to_power_from_state(&mut self, powers: &[f64], coefs: &[f64]) {
-        let total_power: f64 = powers.iter().sum();
-        let total_coef: f64 = coefs.iter().map(|coef| coef.max(0.0)).sum();
-        if total_coef <= 0.0 {
-            return;
-        }
-
-        let derived_scale = total_power / total_coef;
-        self.coef_to_power = if self.coef_to_power > 0.0 {
-            (0.8 * self.coef_to_power) + (0.2 * derived_scale)
-        } else {
-            derived_scale
-        };
+        debug!("CORE Power Changes (anchor path): {:?}", changes);
+        Some((changes, abs_power_delta_total))
     }
 
     /// Computes the latest per-core power record and appends it to `core_power_buffer`.
@@ -1172,10 +795,7 @@ impl Topology {
                 for _ in 1..nb_to_delete {
                     if !self.core_power_buffer.is_empty() {
                         let res = self.core_power_buffer.remove(0);
-                        debug!(
-                            "Cleaning core power buffer on Topology, removing: {:?}",
-                            res
-                        );
+                        debug!("Cleaning core power buffer on Topology, removing: {:?}", res);
                     }
                 }
             }
@@ -1184,10 +804,9 @@ impl Topology {
 
     /// Returns a copy of all records in `core_power_buffer`.
     fn get_core_powers_records_passive(&self) -> Vec<MultiValuedRecord> {
-        self.core_power_buffer
-            .iter()
-            .map(|r| MultiValuedRecord::new(r.timestamp, r.values.clone(), r.units.clone()))
-            .collect()
+        self.core_power_buffer.iter().map(|r| {
+            MultiValuedRecord::new(r.timestamp, r.values.clone(), r.units.clone())
+        }).collect()
     }
 
     /// Returns the most recently computed per-core power record from `core_power_buffer`.
@@ -1199,12 +818,8 @@ impl Topology {
 
     /// Returns the signed per-core coefficient change between the last two coef buffer entries.
     pub fn get_core_coefficient_diffs(&self) -> Option<Vec<f64>> {
-        self.get_records_diff_coefs().map(|r| {
-            r.values
-                .iter()
-                .map(|v| v.parse::<f64>().unwrap_or(0.0))
-                .collect()
-        })
+        self.get_records_diff_coefs()
+            .map(|r| r.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect())
     }
 
     /// Returns the attributed per-core power change (microwatts) between the last two entries
@@ -1216,10 +831,7 @@ impl Topology {
         }
         let last = &self.core_power_buffer[len - 1];
         let prev = &self.core_power_buffer[len - 2];
-        let diffs: Vec<f64> = last
-            .values
-            .iter()
-            .zip(prev.values.iter())
+        let diffs: Vec<f64> = last.values.iter().zip(prev.values.iter())
             .map(|(l, p)| l.parse::<f64>().unwrap_or(0.0) - p.parse::<f64>().unwrap_or(0.0))
             .collect();
         Some(diffs)
@@ -1230,12 +842,7 @@ impl Topology {
     pub fn get_core_coefficient_diff_proportions(&self) -> Option<Vec<f64>> {
         let diffs = self.get_core_coefficient_diffs()?;
         let total: f64 = diffs.iter().map(|c| c.abs()).sum();
-        Some(
-            diffs
-                .iter()
-                .map(|c| if total != 0.0 { c.abs() / total } else { 0.0 })
-                .collect(),
-        )
+        Some(diffs.iter().map(|c| if total != 0.0 { c.abs() / total } else { 0.0 }).collect())
     }
 
     /// Returns each core's share of the total absolute power change:
@@ -1244,13 +851,9 @@ impl Topology {
     pub fn get_core_power_change_proportions(&self) -> Option<Vec<f64>> {
         let changes = self.get_core_power_changes_microwatts()?;
         let total: f64 = changes.iter().map(|c| c.abs()).sum();
-        Some(
-            changes
-                .iter()
-                .map(|c| if total != 0.0 { c.abs() / total } else { 0.0 })
-                .collect(),
-        )
+        Some(changes.iter().map(|c| if total != 0.0 { c.abs() / total } else { 0.0 }).collect())
     }
+
 }
 
 #[cfg(target_os = "linux")]
@@ -1273,28 +876,28 @@ impl Topology {
 // Re-open the impl block to add remaining methods
 impl Topology {
     /// (Existing methods continue here)
-    //#[cfg(target_os = "windows")]
-    //{{
-    //TODO: fix
-    //let nb_sockets = &self.sockets.len();
-    //let mut socket_counter = 0;
-    //let nb_cores_per_socket = &cores.len() / nb_sockets;
-    //warn!("nb_cores_per_socket: {} cores_len: {} sockets_len: {}", nb_cores_per_socket, &cores.len(), &self.sockets.len());
-    //for s in self.sockets.iter_mut() {
-    //    for c in (socket_counter * nb_cores_per_socket)..((socket_counter+1) * nb_cores_per_socket) {
-    //        match cores.pop() {
-    //            Some(core) => {
-    //                warn!("adding core {} to socket {}", core.id, s.id);
-    //                s.add_cpu_core(core);
-    //            },
-    //            None => {
-    //                error!("Uneven number of CPU cores !");
-    //            }
-    //        }
-    //    }
-    //    socket_counter = socket_counter + 1;
-    //}
-    //}
+            //#[cfg(target_os = "windows")]
+            //{{
+            //TODO: fix
+            //let nb_sockets = &self.sockets.len();
+            //let mut socket_counter = 0;
+            //let nb_cores_per_socket = &cores.len() / nb_sockets;
+            //warn!("nb_cores_per_socket: {} cores_len: {} sockets_len: {}", nb_cores_per_socket, &cores.len(), &self.sockets.len());
+            //for s in self.sockets.iter_mut() {
+            //    for c in (socket_counter * nb_cores_per_socket)..((socket_counter+1) * nb_cores_per_socket) {
+            //        match cores.pop() {
+            //            Some(core) => {
+            //                warn!("adding core {} to socket {}", core.id, s.id);
+            //                s.add_cpu_core(core);
+            //            },
+            //            None => {
+            //                error!("Uneven number of CPU cores !");
+            //            }
+            //        }
+            //    }
+            //    socket_counter = socket_counter + 1;
+            //}
+            //}
     //
 
     /// Triggers ProcessTracker refresh on process stats
@@ -1395,15 +998,11 @@ impl Topology {
         }
     }
 
-    /// Returns the current idle power for the entire host
+   /// Returns the current idle power for the entire host 
     pub fn get_idle_power_microwatts(&self) -> Option<Record> {
         let mut total = 0_u64;
         for s in &self.sockets {
-            if let Some(idle) = s
-                .get_idle_power_microwatts()
-                .as_ref()
-                .and_then(|r| r.value.parse::<u64>().ok())
-            {
+            if let Some(idle) = s.get_idle_power_microwatts().as_ref().and_then(|r| r.value.parse::<u64>().ok()) {
                 total += idle;
             }
         }
@@ -1416,15 +1015,11 @@ impl Topology {
         ))
     }
 
-    /// Returns the current activation power for the entire host
+   /// Returns the current activation power for the entire host 
     pub fn get_activation_power_microwatts(&self) -> Option<Record> {
         let mut total = 0_u64;
         for s in &self.sockets {
-            if let Some(idle) = s
-                .get_activation_power_microwatts()
-                .as_ref()
-                .and_then(|r| r.value.parse::<u64>().ok())
-            {
+            if let Some(idle) = s.get_activation_power_microwatts().as_ref().and_then(|r| r.value.parse::<u64>().ok()) {
                 total += idle;
             }
         }
@@ -1454,13 +1049,11 @@ impl Topology {
     }
 
     pub fn get_background_power_microwatts(&self) -> Option<Record> {
-        let idle = self
-            .get_idle_power_microwatts()
+        let idle = self.get_idle_power_microwatts()
             .as_ref()
             .and_then(|r| r.value.parse::<u64>().ok())
             .unwrap_or(0);
-        let activation = self
-            .get_activation_power_microwatts()
+        let activation = self.get_activation_power_microwatts()
             .as_ref()
             .and_then(|r| r.value.parse::<u64>().ok())
             .unwrap_or(0);
@@ -1500,9 +1093,7 @@ impl Topology {
                         let microwatts = microjoules as f64 / time_diff;
                         return Some(Record::new(
                             last_record.timestamp,
-                            (microwatts as u64)
-                                .saturating_sub(background_conso)
-                                .to_string(),
+                            (microwatts as u64).saturating_sub(background_conso).to_string(),
                             units::Unit::MicroWatt,
                         ));
                     }
@@ -1524,6 +1115,7 @@ impl Topology {
         }
         None
     }
+
 
     /// Returns a CPUStat instance containing the difference between last
     /// and previous stats measurement (from stat_buffer), attribute by attribute.
@@ -1778,63 +1370,43 @@ impl Topology {
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
             let mut core_percentages: Option<Vec<f64>> = None;
             let cores: Vec<CPUCore> = self.get_cores();
-            let cores_metrics: Vec<Option<CPUCoreMetrics>> =
-                cores.iter().map(|c| c.get_core_metrics_delta()).collect();
-            if let Some(core_time_deltas) = self.get_proc_tracker().get_per_core_cpu_time_delta(pid)
-            {
+            let cores_metrics: Vec<Option<CPUCoreMetrics>> = cores
+                .iter()
+                .map(|c| c.get_core_metrics_delta())
+                .collect();
+            if let Some(core_time_deltas) = self.get_proc_tracker().get_per_core_cpu_time_delta(pid) {
                 debug!(
                     "Gotten EBPF per core times process {pid}: {}, Core IDs: {}",
-                    core_time_deltas
-                        .iter()
-                        .map(|v| v.to_string())
-                        .collect::<Vec<String>>()
-                        .join(", "),
-                    cores
-                        .iter()
-                        .map(|c| c.id.to_string())
-                        .collect::<Vec<String>>()
-                        .join(", "),
+                    core_time_deltas.iter().map(|v| v.to_string()).collect::<Vec<String>>().join(", "),
+                    cores.iter().map(|c| c.id.to_string()).collect::<Vec<String>>().join(", "),
                 );
                 core_percentages = Some(
-                    cores
-                        .iter()
-                        .enumerate()
-                        .map(|t| {
-                            if let Some(core_metrics) = &cores_metrics[t.0] {
-                                if core_metrics.active_time != 0 {
-                                    let ticks_per_sec =
-                                        unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
-                                    let active_time_ns =
-                                        core_metrics.active_time * 1_000_000_000 / ticks_per_sec;
-                                    core_time_deltas[t.1.id as usize] as f64 / active_time_ns as f64
-                                } else {
-                                    0_f64
-                                }
+                    cores.iter().enumerate().map(|t| {
+                        if let Some(core_metrics) = &cores_metrics[t.0] {
+                            if core_metrics.active_time != 0 {
+                                let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
+                                let active_time_ns = core_metrics.active_time * 1_000_000_000 / ticks_per_sec;
+                                core_time_deltas[t.1.id as usize] as f64 / active_time_ns as f64
                             } else {
-                                0.0_f64
+                                0_f64
                             }
-                        })
-                        .collect(),
+                        } else {
+                            0.0_f64
+                        }
+                    }).collect()
                 )
             }
-            if let Some(process_cpu_percentage) = self
-                .get_proc_tracker()
-                .get_process_cpu_time_delta_as_percentage(pid)
-            {
+            if let Some(process_cpu_percentage) = self.get_proc_tracker().get_process_cpu_time_delta_as_percentage(pid) {
                 if core_percentages.is_none() {
                     debug!("Falling back to standard non-EBPF method");
                     core_percentages = Some(
                         cores_metrics
                             .iter()
                             .map(|o| {
-                                o.as_ref()
-                                    .map(|metrics| {
-                                        (process_cpu_percentage / 100.0_f64)
-                                            * (metrics.cpu_time_percentage / 100.0_f64)
-                                    })
-                                    .unwrap_or(0.0_f64)
-                            })
-                            .collect(),
+                                o.as_ref().map(|metrics| {
+                                    (process_cpu_percentage / 100.0_f64) * (metrics.cpu_time_percentage / 100.0_f64)
+                                }).unwrap_or(0.0_f64)
+                            }).collect()
                     );
                 }
                 res.insert(
@@ -1915,29 +1487,18 @@ impl Topology {
                 );
             }
             if let Some(core_percentages) = core_percentages {
-                let result = self
-                    .get_core_powers_microwatts()
-                    .map(|r| {
-                        r.values
-                            .iter()
-                            .enumerate()
-                            .map(|t| {
-                                let conso = t.1;
-                                let percentage = core_percentages[t.0];
-                                conso.parse::<f64>().unwrap_or(0_f64) * percentage
-                            })
-                            .sum::<f64>()
-                    })
-                    .unwrap_or(0_f64);
-                debug!("Simplified and correct process {pid} energy {result}");
-                debug!(
-                    "EBPF Core percentage {} for process {pid} Power {result}",
-                    core_percentages
+                let result = self.get_core_powers_microwatts().map(|r| {
+                    r.values
                         .iter()
-                        .map(|p| p.to_string())
-                        .collect::<Vec<String>>()
-                        .join(", ")
-                );
+                        .enumerate()
+                        .map(|t| {
+                            let conso = t.1;
+                            let percentage = core_percentages[t.0];
+                            conso.parse::<f64>().unwrap_or(0_f64) * percentage
+                        }).sum::<f64>()
+                }).unwrap_or(0_f64);
+                debug!("Simplified and correct process {pid} energy {result}");
+                debug!("EBPF Core percentage {} for process {pid} Power {result}", core_percentages.iter().map(|p| p.to_string()).collect::<Vec<String>>().join(", "));
                 res.insert(
                     String::from("scaph_process_power_consumption_microwatts"),
                     (
@@ -2077,6 +1638,7 @@ impl Topology {
     }
 }
 
+
 // !!!!!!!!!!!!!!!!! CPUSocket !!!!!!!!!!!!!!!!!!!!!!!
 /// CPUSocket struct represents a CPU socket (matches physical_id attribute in /proc/cpuinfo),
 /// owning CPU cores (processor in /proc/cpuinfo).
@@ -2131,6 +1693,7 @@ impl RecordGenerator for CPUSocket {
             }
         }
 
+
         if !self.record_buffer.is_empty() {
             self.clean_old_records();
         }
@@ -2169,8 +1732,7 @@ impl RecordGenerator for CPUSocket {
 
         if !self.activation_idle_record_buffer.is_empty() {
             let idle_record_ptr = &self.activation_idle_record_buffer[0];
-            let idle_curr_size =
-                size_of_val(idle_record_ptr) * self.activation_idle_record_buffer.len();
+            let idle_curr_size = size_of_val(idle_record_ptr) * self.activation_idle_record_buffer.len();
             trace!(
                 "socket idle record buffer current size: {} max_bytes: {}",
                 idle_curr_size,
@@ -2289,24 +1851,14 @@ impl CPUSocket {
     }
 
     /// Reads a new record for socket-level idle energy
-    pub fn read_activation_idle_record(
-        &self,
-        records: Vec<CpuStateEvent>,
-    ) -> Option<MultiValuedRecord> {
-        let idle_rec_exists = records
-            .iter()
-            .any(|r| r.event_type == CpuEventType::IdleEvent);
-        let activation_rec_exists = records
-            .iter()
-            .any(|r| r.event_type == CpuEventType::ActivationEvent);
+    pub fn read_activation_idle_record(&self, records: Vec<CpuStateEvent>) -> Option<MultiValuedRecord> {
+        let idle_rec_exists = records.iter().any(|r| r.event_type == CpuEventType::IdleEvent);
+        let activation_rec_exists = records.iter().any(|r| r.event_type == CpuEventType::ActivationEvent);
         if idle_rec_exists || activation_rec_exists {
-            if let Some(current) = self
-                .get_records_diff_power_microwatts()
+            if let Some(current) = self.get_records_diff_power_microwatts()
                 .as_ref()
-                .and_then(|r| r.value.parse::<u64>().ok())
-            {
-                let mut idle = self
-                    .get_idle_power_microwatts()
+                .and_then(|r| r.value.parse::<u64>().ok()) {
+                let mut idle = self.get_idle_power_microwatts()
                     .as_ref()
                     .and_then(|r| r.value.parse::<u64>().ok())
                     .unwrap_or(0);
@@ -2315,12 +1867,11 @@ impl CPUSocket {
                     idle = if idle != 0 {
                         min(current, idle)
                     } else {
-                        current
-                    };
+                            current
+                        };
                 }
 
-                let mut activation = self
-                    .get_activation_power_microwatts()
+                let mut activation = self.get_activation_power_microwatts()
                     .as_ref()
                     .and_then(|r| r.value.parse::<u64>().ok())
                     .unwrap_or(0);
@@ -2336,8 +1887,14 @@ impl CPUSocket {
                 debug!("Adding new ACVTIVATION IDLE Record: activation={activation}, idle={idle}");
                 return Some(MultiValuedRecord::new(
                     current_system_time_since_epoch(),
-                    vec![idle.to_string(), activation.to_string()],
-                    vec![units::Unit::MicroWatt, units::Unit::MicroWatt],
+                    vec![
+                        idle.to_string(),
+                        activation.to_string(),
+                    ],
+                    vec![
+                        units::Unit::MicroWatt,
+                        units::Unit::MicroWatt,
+                    ]
                 ));
             }
         }
@@ -2365,6 +1922,7 @@ impl CPUSocket {
         }
         None
     }
+
 
     /// Returns current activation energy
     pub fn get_activation_power_microwatts(&self) -> Option<Record> {
@@ -2519,13 +2077,11 @@ impl CPUSocket {
 
     /// Returns the background power (max of idle and activation) for this socket
     pub fn get_background_power_microwatts(&self) -> Option<Record> {
-        let idle = self
-            .get_idle_power_microwatts()
+        let idle = self.get_idle_power_microwatts()
             .as_ref()
             .and_then(|r| r.value.parse::<u64>().ok())
             .unwrap_or(0);
-        let activation = self
-            .get_activation_power_microwatts()
+        let activation = self.get_activation_power_microwatts()
             .as_ref()
             .and_then(|r| r.value.parse::<u64>().ok())
             .unwrap_or(0);
@@ -2572,9 +2128,8 @@ impl CPUSocket {
                         .saturating_sub(
                             self.get_background_power_microwatts()
                                 .and_then(|r| r.value.parse::<u64>().ok())
-                                .unwrap_or(0),
-                        )
-                        .to_string(),
+                                .unwrap_or(0)
+                        ).to_string(),
                     units::Unit::MicroWatt,
                 ));
             }
@@ -2643,7 +2198,10 @@ impl MultiValuedRecordGenerator for CPUCore {
                 self.record_buffer.push(record);
             }
             Err(e) => {
-                debug!("Couldn't read cpuidle record from cpu{}: {:?}", self.id, e);
+                debug!(
+                    "Couldn't read cpuidle record from cpu{}: {:?}",
+                    self.id, e
+                );
             }
         }
         if !self.record_buffer.is_empty() {
@@ -2698,7 +2256,9 @@ impl MultiValuedRecordReader for CPUCore {
                 for entry in entries.flatten() {
                     let state_path = entry.path();
                     if state_path.is_dir() {
-                        let state_name = state_path.file_name().and_then(|n| n.to_str());
+                        let state_name = state_path
+                            .file_name()
+                            .and_then(|n| n.to_str());
 
                         if let Some(name) = state_name {
                             // Skip state0 (C0, active state)
@@ -2731,67 +2291,38 @@ impl MultiValuedRecordReader for CPUCore {
             let aperf = read_msr(MSR_IA32_APERF).unwrap_or(0);
 
             // Logic to retrieve core cpu time
-            let (core_busy, core_total, node_busy, node_total) = KernelStats::new()
-                .ok()
-                .and_then(|mut ks| {
-                    let nt = &ks.total;
-                    let n_total = nt.user
-                        + nt.nice
-                        + nt.system
-                        + nt.idle
-                        + nt.iowait.unwrap_or(0)
-                        + nt.irq.unwrap_or(0)
-                        + nt.softirq.unwrap_or(0)
-                        + nt.steal.unwrap_or(0)
-                        + nt.guest.unwrap_or(0)
-                        + nt.guest_nice.unwrap_or(0);
-                    let n_busy = n_total - nt.idle - nt.iowait.unwrap_or(0);
-                    ks.cpu_time.get(self.id as usize).map(|ct| {
-                        let total = ct.user
-                            + ct.nice
-                            + ct.system
-                            + ct.idle
-                            + ct.iowait.unwrap_or(0)
-                            + ct.irq.unwrap_or(0)
-                            + ct.softirq.unwrap_or(0)
-                            + ct.steal.unwrap_or(0)
-                            + ct.guest.unwrap_or(0)
-                            + ct.guest_nice.unwrap_or(0);
-                        let busy = total - ct.idle - ct.iowait.unwrap_or(0);
-                        (busy, total, n_busy, n_total)
+            let (core_busy, core_total, node_busy, node_total) =
+                KernelStats::new()
+                    .ok()
+                    .and_then(|mut ks| {
+                        let nt = &ks.total;
+                        let n_total = nt.user + nt.nice + nt.system + nt.idle
+                            + nt.iowait.unwrap_or(0) + nt.irq.unwrap_or(0)
+                            + nt.softirq.unwrap_or(0) + nt.steal.unwrap_or(0)
+                            + nt.guest.unwrap_or(0) + nt.guest_nice.unwrap_or(0);
+                        let n_busy = n_total - nt.idle - nt.iowait.unwrap_or(0);
+                        ks.cpu_time.get(self.id as usize).map(|ct| {
+                            let total = ct.user + ct.nice + ct.system + ct.idle
+                                + ct.iowait.unwrap_or(0) + ct.irq.unwrap_or(0)
+                                + ct.softirq.unwrap_or(0) + ct.steal.unwrap_or(0)
+                                + ct.guest.unwrap_or(0) + ct.guest_nice.unwrap_or(0);
+                            let busy = total - ct.idle - ct.iowait.unwrap_or(0);
+                            (busy, total, n_busy, n_total)
+                        })
                     })
-                })
-                .unwrap_or((0, 0, 0, 0));
+                    .unwrap_or((0, 0, 0, 0));
 
-            let instr = self
-                .instructions
-                .as_ref()
-                .and_then(|c| c.borrow_mut().read_count_and_time().ok());
-            let cyc = self
-                .cycles
-                .as_ref()
-                .and_then(|c| c.borrow_mut().read_count_and_time().ok());
+            let instr = self.instructions.as_ref().and_then(|c| c.borrow_mut().read_count_and_time().ok());
+            let cyc = self.cycles.as_ref().and_then(|c| c.borrow_mut().read_count_and_time().ok());
 
             // Correct for multiplexing: if time_running < time_enabled, the kernel
             // only scheduled the counter onto hardware for part of the interval.
-            let instr_scaled = instr
-                .map(|instr| {
-                    if instr.time_running > 0 {
-                        instr.count as f64 * (instr.time_enabled as f64 / instr.time_running as f64)
-                    } else {
-                        0.0
-                    }
-                })
-                .unwrap_or(0.0);
-            let cyc_scaled = cyc
-                .map(|cyc| {
-                    if cyc.time_running > 0 {
-                        cyc.count as f64 * (cyc.time_enabled as f64 / cyc.time_running as f64)
-                    } else {
-                        0.0
-                    }
-                })
-                .unwrap_or(0.0);
+            let instr_scaled = instr.map(|instr| if instr.time_running > 0 {
+                instr.count as f64 * (instr.time_enabled as f64 / instr.time_running as f64)
+            } else { 0.0 }).unwrap_or(0.0);
+            let cyc_scaled = cyc.map(|cyc| if cyc.time_running > 0 {
+                cyc.count as f64 * (cyc.time_enabled as f64 / cyc.time_running as f64)
+            } else { 0.0 }).unwrap_or(0.0);
 
             Ok(MultiValuedRecord::new(
                 current_system_time_since_epoch(),
@@ -2829,18 +2360,17 @@ impl MultiValuedRecordReader for CPUCore {
 impl CPUCore {
     /// Instantiates CPUCore and returns the instance.
     pub fn new(id: u16, attributes: HashMap<String, String>) -> CPUCore {
+
         let cpu_id = id as usize;
 
         let mut instructions = Builder::new(Hardware::INSTRUCTIONS)
             .one_cpu(cpu_id)
             .any_pid()
-            .build()
-            .ok();
+            .build().ok();
         let mut cycles = Builder::new(Hardware::CPU_CYCLES)
             .one_cpu(cpu_id)
             .any_pid()
-            .build()
-            .ok();
+            .build().ok();
 
         if let Some(ref mut i) = instructions {
             let _ = i.enable();
@@ -2877,11 +2407,8 @@ impl CPUCore {
     pub fn get_core_metrics_delta(&self) -> Option<CPUCoreMetrics> {
         if self.record_buffer.len() > 1 {
             let last = self.record_buffer.last().unwrap();
-            let previous = self
-                .record_buffer
-                .get(self.record_buffer.len() - 2)
-                .unwrap();
-            let mut res = CPUCoreMetrics {
+            let previous = self.record_buffer.get(self.record_buffer.len() - 2).unwrap();
+            let mut res = CPUCoreMetrics{
                 average_frequency: 0,
                 active_percentage: 0_f64,
                 cpu_time_percentage: 0.0,
@@ -2894,15 +2421,9 @@ impl CPUCore {
             };
 
             if last.values.len() >= 9 && previous.values.len() >= 9 {
-                let core_busy_delta = last.values[3]
-                    .trim()
-                    .parse::<u64>()
-                    .unwrap_or(0)
+                let core_busy_delta = last.values[3].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[3].trim().parse::<u64>().unwrap_or(0));
-                let core_total_delta = last.values[4]
-                    .trim()
-                    .parse::<u64>()
-                    .unwrap_or(0)
+                let core_total_delta = last.values[4].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[4].trim().parse::<u64>().unwrap_or(0));
 
                 res.active_percentage = if core_total_delta != 0 {
@@ -2911,15 +2432,9 @@ impl CPUCore {
                     0_f64
                 };
 
-                let aperf_delta = last.values[2]
-                    .trim()
-                    .parse::<u64>()
-                    .unwrap_or(0)
+                let aperf_delta = last.values[2].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[2].trim().parse::<u64>().unwrap_or(0));
-                let mperf_delta = last.values[1]
-                    .trim()
-                    .parse::<u64>()
-                    .unwrap_or(0)
+                let mperf_delta = last.values[1].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[1].trim().parse::<u64>().unwrap_or(0));
 
                 res.aperf = aperf_delta;
@@ -2939,16 +2454,10 @@ impl CPUCore {
                     0
                 };
 
-                let core_busy_delta = last.values[3]
-                    .trim()
-                    .parse::<u64>()
-                    .unwrap_or(0)
+                let core_busy_delta = last.values[3].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[3].trim().parse::<u64>().unwrap_or(0));
                 res.active_time = core_busy_delta;
-                let node_busy_delta = last.values[5]
-                    .trim()
-                    .parse::<u64>()
-                    .unwrap_or(0)
+                let node_busy_delta = last.values[5].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[5].trim().parse::<u64>().unwrap_or(0));
                 res.cpu_time_percentage = if node_busy_delta != 0 {
                     core_busy_delta as f64 / node_busy_delta as f64 * 100.0
@@ -2956,16 +2465,13 @@ impl CPUCore {
                     0.0
                 };
 
-                res.inst = last.values[7].trim().parse::<f64>().unwrap_or(0.0)
-                    - previous.values[7].trim().parse::<f64>().unwrap_or(0.0);
-                res.cyc = last.values[8].trim().parse::<f64>().unwrap_or(0.0)
-                    - previous.values[8].trim().parse::<f64>().unwrap_or(0.0);
 
-                res.ipc = if res.cyc > 0.0 {
-                    res.inst / res.cyc
-                } else {
-                    0.0
-                };
+                res.inst = last.values[7].trim().parse::<f64>().unwrap_or(0.0) -
+                    previous.values[7].trim().parse::<f64>().unwrap_or(0.0);
+                res.cyc = last.values[8].trim().parse::<f64>().unwrap_or(0.0) - 
+                    previous.values[8].trim().parse::<f64>().unwrap_or(0.0);
+
+                res.ipc = if res.cyc > 0.0 { res.inst / res.cyc } else { 0.0 };
 
                 return Some(res);
             }
@@ -3163,13 +2669,10 @@ impl Record {
     }
 }
 
+
 impl MultiValuedRecord {
     /// Instances Record and returns the instance
-    pub fn new(
-        timestamp: Duration,
-        values: Vec<String>,
-        units: Vec<units::Unit>,
-    ) -> MultiValuedRecord {
+    pub fn new(timestamp: Duration, values: Vec<String>, units: Vec<units::Unit>) -> MultiValuedRecord {
         MultiValuedRecord {
             timestamp,
             values,
@@ -3190,17 +2693,14 @@ impl fmt::Display for Record {
     }
 }
 
+
 impl fmt::Display for MultiValuedRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "recorded [{}] [{}] at {:?}",
             self.values.join(", "),
-            self.units
-                .iter()
-                .map(|u| u.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
+            self.units.iter().map(|u| u.to_string()).collect::<Vec<String>>().join(", "),
             self.timestamp
         )
     }
