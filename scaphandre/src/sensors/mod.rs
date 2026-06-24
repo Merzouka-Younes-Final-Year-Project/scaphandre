@@ -20,7 +20,7 @@ use protobuf::Clear;
 use scaphandre_common::{CpuEventType, CpuStateEvent};
 use time::unit::{self, Unit};
 use std::cell::RefCell;
-use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::{Duration, Instant}, vec};
+use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration, vec};
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::FileExt;
 #[allow(unused_imports)]
@@ -659,21 +659,14 @@ impl CPUSocket {
                 .as_ref()
                 .and_then(|r| r.value.parse::<i64>().ok())
             {
-                let now = Instant::now();
-                let recalibrate = self.coef_to_power > 0.0
-                    && self.core_coef_buffer.len() >= 2
-                    && self.last_power_recalibration
-                        .map_or(true, |t| now.duration_since(t) >= self.power_recalibration_interval);
-                let last_powers = if recalibrate {
-                    self.last_power_recalibration = Some(now);
-                    let before_last_coefs = self.core_coef_buffer[self.core_coef_buffer.len() - 2]
-                        .values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect::<Vec<f64>>();
-                    debug!("CORE recalibrating last_powers from coef_to_power * before_last_coefs");
-                    Some(before_last_coefs.iter().map(|c| self.coef_to_power * c).collect::<Vec<f64>>())
+                let last_powers = self.core_power_buffer.last().map(|r| {
+                    r.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect::<Vec<f64>>()
+                });
+                let before_last_coefs: Option<Vec<f64>> = if self.coef_to_power > 0.0 && self.core_coef_buffer.len() >= 2 {
+                    Some(self.core_coef_buffer[self.core_coef_buffer.len() - 2]
+                        .values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect())
                 } else {
-                    self.core_power_buffer.last().map(|r| {
-                        r.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect::<Vec<f64>>()
-                    })
+                    None
                 };
                 debug!("CORE Last Powers: {}", last_powers.as_ref().unwrap_or(&vec![]).iter().map(|v| v.to_string()).collect::<Vec<String>>().join(", "));
                 let last_powers = last_powers?;
@@ -701,7 +694,18 @@ impl CPUSocket {
                     let new_values: Vec<f64> = last_powers
                         .iter()
                         .zip(core_power_changes.iter())
-                        .map(|(prev, delta)| prev + delta)
+                        .enumerate()
+                        .map(|(i, (prev, delta))| {
+                            let v = prev + delta;
+                            if v < 0.0 {
+                                before_last_coefs.as_ref()
+                                    .and_then(|c| c.get(i))
+                                    .map(|c| self.coef_to_power * c)
+                                    .unwrap_or(0.0)
+                            } else {
+                                v
+                            }
+                        })
                         .collect();
                     let new_values: Vec<String> = if let Some(socket_cpu_power) = self.cpu_power_buffer
                         .iter()
@@ -1772,10 +1776,6 @@ pub struct CPUSocket {
     pub cpu_power_buffer: Vec<Record>,
     /// Running average of abs_power_delta_total / abs_coef_total, used as fallback scale
     pub coef_to_power: f64,
-    /// Time between coef-based core power recalibrations (default: 30s)
-    pub power_recalibration_interval: Duration,
-    /// Timestamp of the last coef-based recalibration
-    pub last_power_recalibration: Option<Instant>,
     ///
     #[allow(dead_code)]
     pub sensor_data: HashMap<String, String>,
@@ -1912,8 +1912,6 @@ impl CPUSocket {
             core_power_buffer: vec![],
             cpu_power_buffer: vec![],
             coef_to_power: 0.0,
-            power_recalibration_interval: Duration::from_secs(60 * 2),
-            last_power_recalibration: None,
             sensor_data,
             // idle_percentage_threshold: 0.95_f64,
             idle_percentage_threshold: 0.65_f64,
