@@ -48,13 +48,22 @@ pub fn load() -> anyhow::Result<aya::Ebpf> {
 
     let state_tick: &mut PerfEvent = ebpf.program_mut("cpu_state_tick").unwrap().try_into()?;
     state_tick.load()?;
+    // Attach only to the first CPU per socket to avoid redundant per-socket aggregation.
+    let mut seen_sockets = std::collections::HashSet::new();
     for cpu in online_cpus().map_err(|(_, e)| e)? {
-        state_tick.attach(
-            PerfEventConfig::Software(SoftwareEvent::CpuClock),
-            PerfEventScope::AllProcessesOneCpu { cpu },
-            SamplePolicy::Frequency(CPU_STATE_TICK_HZ),
-            true,
-        )?;
+        let socket_path = format!("/sys/devices/system/cpu/cpu{cpu}/topology/physical_package_id");
+        let socket_id = std::fs::read_to_string(&socket_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        if seen_sockets.insert(socket_id) {
+            state_tick.attach(
+                PerfEventConfig::Software(SoftwareEvent::CpuClock),
+                PerfEventScope::AllProcessesOneCpu { cpu },
+                SamplePolicy::Frequency(CPU_STATE_TICK_HZ),
+                true,
+            )?;
+        }
     }
     debug!("Loaded cpu_state_tick eBPF program (100 Hz / 10 ms).");
 

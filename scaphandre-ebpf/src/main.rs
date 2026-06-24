@@ -6,13 +6,11 @@ use aya_ebpf::{
     maps::{Array, PerCpuHashMap, RingBuf},
     programs::{PerfEventContext, TracePointContext}
 };
-use aya_log_ebpf::info;
 use scaphandre_common::{CpuEventType, CpuStateEvent};
 
 // TODO: Ask LLM about fixes from this side and simplify if possible
 
-// TODO: Update to proper max keys
-const MAX_KEYS: u32 = 1024;
+const MAX_KEYS: u32 = 32768;
 const MAX_CPU: u32 = 256;
 const MAX_SOCKET: u16 = 64;
 
@@ -41,6 +39,9 @@ static PID_TIMES: PerCpuHashMap<u32, u64> = PerCpuHashMap::with_max_entries(MAX_
 static PID_LAST: PerCpuHashMap<u32, u64> = PerCpuHashMap::with_max_entries(MAX_KEYS, 0);
 
 #[map]
+static TID_TO_TGID: aya_ebpf::maps::HashMap<u32, u32> = aya_ebpf::maps::HashMap::with_max_entries(MAX_KEYS, 0);
+
+#[map]
 static CPU_TIME: Array<u64> = Array::with_max_entries(MAX_CPU, 0);
 
 #[map]
@@ -55,13 +56,14 @@ static CPU_TO_SOCKET: Array<u16> = Array::with_max_entries(MAX_CPU, 0);
 
 #[tracepoint]
 pub fn scaphandre(ctx: TracePointContext) -> u32 {
-    match try_scaphandre(ctx) {
+    match try_sched_switch(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
     }
 }
 
-fn try_scaphandre(ctx: TracePointContext) -> Result<u32, u32> {
+// AI: This should be renamed properly for what it does and synced with userspace code
+fn try_sched_switch(ctx: TracePointContext) -> Result<u32, u32> {
     let now = unsafe { bpf_ktime_get_ns() };
     let cpu = unsafe { bpf_get_smp_processor_id() };
 
@@ -69,25 +71,34 @@ fn try_scaphandre(ctx: TracePointContext) -> Result<u32, u32> {
         ctx.read_at::<SchedSwitchArgs>(0).map_err(|_| 1u32)?
     };
 
-    let prev_pid = args.prev_pid as u32;
-    let next_pid = args.next_pid as u32;
+    // Use TGID (upper 32 bits of pid_tgid) so keys match userspace process PIDs.
+    // For next_pid we can read TGID directly; for prev we derive it from the tid via a lookup.
+    let prev_tid = args.prev_pid as u32;
+    let next_tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
+    // Prev TGID: look up from our tid→tgid map seeded when tasks are scheduled in.
+    let prev_tgid = unsafe {
+        TID_TO_TGID.get(prev_tid).copied().unwrap_or(prev_tid)
+    };
+
+    // Seed tid→tgid for the incoming task so future prev lookups work.
+    let _ = TID_TO_TGID.insert(args.next_pid as u32, next_tgid, 0);
 
     // Accumulate time for the task that just got switched OFF the CPU
-    if let Some(last_timestamp) = PID_LAST.get_ptr(prev_pid) {
+    if let Some(last_timestamp) = PID_LAST.get_ptr(prev_tgid) {
         let delta = now - unsafe { *last_timestamp };
-        if let Some(p_time) = PID_TIMES.get_ptr_mut(prev_pid) {
+        if let Some(p_time) = PID_TIMES.get_ptr_mut(prev_tgid) {
             unsafe { *p_time += delta };
         } else {
-            let _ = PID_TIMES.insert(prev_pid, delta, 0);
+            let _ = PID_TIMES.insert(prev_tgid, delta, 0);
         };
-        let _ = PID_LAST.remove(prev_pid);
+        let _ = PID_LAST.remove(prev_tgid);
         if let Some(c_time) = CPU_TIME.get_ptr_mut(cpu) {
             unsafe { *c_time += delta };
         }
     }
 
     // Record when the incoming task got switched ON
-    let _ = PID_LAST.insert(next_pid, now, 0);
+    let _ = PID_LAST.insert(next_tgid, now, 0);
 
     Ok(0)
 }
@@ -95,7 +106,7 @@ fn try_scaphandre(ctx: TracePointContext) -> Result<u32, u32> {
 #[perf_event]
 pub fn sample_tick(_ctx: PerfEventContext) -> u32 {
     let now = unsafe { bpf_ktime_get_ns() };
-    let pid = (bpf_get_current_pid_tgid() & 0xFFFF_FFFF) as u32;
+    let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
     let cpu = unsafe { bpf_get_smp_processor_id() };
 
     if let Some(p) = PID_LAST.get_ptr_mut(pid) {
@@ -116,8 +127,9 @@ pub fn sample_tick(_ctx: PerfEventContext) -> u32 {
     0
 }
 
-/// Fires every 10 ms. TODO: implement idle/active state event emission.
-// TODO: Fix this to execute only on one core
+/// Fires every 10 ms.
+// AI: Fix this to execute only on one core per socket. This should be done in userspace by
+// retrieving sockets and hooking into the first core
 #[perf_event]
 pub fn cpu_state_tick(_ctx: PerfEventContext) -> u32 {
     let mut socket_active_cpus: [u32; MAX_SOCKET as usize] = [u32::MAX; MAX_SOCKET as usize];
