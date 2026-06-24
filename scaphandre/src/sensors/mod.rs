@@ -1912,7 +1912,7 @@ impl CPUSocket {
             core_power_buffer: vec![],
             cpu_power_buffer: vec![],
             coef_to_power: 0.0,
-            power_recalibration_interval: Duration::from_secs(60 * 10),
+            power_recalibration_interval: Duration::from_secs(60 * 2),
             last_power_recalibration: None,
             sensor_data,
             // idle_percentage_threshold: 0.95_f64,
