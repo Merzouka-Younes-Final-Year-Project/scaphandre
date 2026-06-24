@@ -89,6 +89,58 @@ background_domain_i = socket_background × (domain_power_i / Σ domain_power_j)
 
 If all domain power readings are zero the socket background is split equally. This value is subtracted from the raw RAPL counter diff before reporting `consumption`, so `consumption` reflects only active (non-idle/non-activation) power for that domain.
 
+## `consumers` array
+
+Each element describes one of the top processes by estimated power consumption.
+
+```jsonc
+{
+  "exe": "/usr/bin/stress-ng",
+  "cmdline": "stress-ng --cpu 4",
+  "pid": 12345,
+  "consumption": 850000.0,
+  "timestamp": 1750000000.123,
+  "resources_usage": { ... },   // optional – present only with --resources flag
+  "container": { ... },         // optional – present only with --containers flag
+  "core_times": {               // optional – present only when eBPF data is available
+    "process_ns": [0, 120000000, 0, 85000000],
+    "total_ns":   [200000000, 200000000, 200000000, 200000000],
+    "proportion": [0.0, 0.6, 0.0, 0.425]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `exe` | string | Executable path |
+| `cmdline` | string | Full command line |
+| `pid` | int | Process ID |
+| `consumption` | float | Estimated power consumed by this process in microwatts |
+| `timestamp` | float | Unix timestamp (seconds) of this measurement |
+| `resources_usage` | object \| null | CPU, memory and disk usage (requires `--resources`) |
+| `container` | object \| null | Container metadata (requires `--containers`) |
+| `core_times` | object \| null | Per-core CPU time breakdown from eBPF (see below) |
+
+### `core_times`
+
+Present only when the eBPF subsystem is active and has accumulated at least two samples. `null` otherwise (the process power estimate still uses a fallback method based on OS-reported CPU time percentages).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `process_ns` | array of int | Per-logical-CPU nanoseconds this process ran since the previous sample, indexed by logical CPU number |
+| `total_ns` | array of int | Per-logical-CPU total busy nanoseconds on that CPU since the previous sample, indexed by logical CPU number |
+| `proportion` | array of float | Per-logical-CPU fraction: `process_ns[i] / total_ns[i]`. Used to weight each core's power estimate for this process. `0.0` when `total_ns[i]` is zero. |
+
+All three arrays have the same length (equal to the number of logical CPUs on the host) and are indexed by logical CPU number (matching the `id` field in the `cores` array).
+
+The process power estimate is:
+
+```
+consumption = sum_i(core_power[i] × proportion[i])
+```
+
+where `core_power[i]` is the current `consumption` value for core `i` from the `cores` array.
+
 ## `cores` array
 
 Each element describes one logical CPU core for the current interval.
