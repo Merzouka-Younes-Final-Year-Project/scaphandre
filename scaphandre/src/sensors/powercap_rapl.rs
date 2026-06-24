@@ -19,6 +19,16 @@ pub enum DomainResource {
     GPU,
 }
 
+impl std::fmt::Display for DomainResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CPU => write!(f, "core"),
+            Self::GPU => write!(f, "uncore"),
+            Self::Memory => write!(f, "dram"),
+        }
+    }
+}
+
 impl DomainResource {
     pub fn parse(name: &str) -> Self {
         match name {
@@ -26,14 +36,6 @@ impl DomainResource {
             "uncore" => Self::GPU,
             "dram" => Self::Memory,
             _ => panic!("Unsupported resource: {name}")
-        }
-    }
-
-    pub fn to_string(&self) -> String {
-        match self {
-            Self::CPU => String::from("core"),
-            Self::GPU => String::from("uncore"),
-            Self::Memory => String::from("dram"),
         }
     }
 }
@@ -226,7 +228,7 @@ impl Sensor for PowercapRAPLSensor {
                 if let Ok(domain_name) = &fs::read_to_string(format!("{folder_name}/name")) {
                     sensor_data_for_domain.insert(
                         String::from("related_resource"),
-                        DomainResource::parse(domain_name).to_string(),
+                        DomainResource::parse(domain_name.trim()).to_string(),
                     );
                     topo.safe_add_domain_to_socket(
                         socket_id,
