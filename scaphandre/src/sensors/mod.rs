@@ -1047,7 +1047,8 @@ impl Topology {
     }
 
     /// Returns the per-CPU busy nanosecond delta between the last two cpu_time_buffer entries.
-    /// Returns None if any CPU delta is zero (no elapsed CPU time — cannot compute a meaningful ratio).
+    /// Handles u64 wrap-around: if last < prev, recovers via u64::MAX - prev + last.
+    /// Returns None if all CPU deltas are zero.
     pub fn get_cpu_time_diff(&self) -> Option<MultiValuedRecord> {
         let len = self.cpu_time_buffer.len();
         if len < 2 { return None; }
@@ -1057,11 +1058,16 @@ impl Topology {
             .map(|(l, p)| {
                 let lv = l.parse::<u64>().unwrap_or(0);
                 let pv = p.parse::<u64>().unwrap_or(0);
-                lv.saturating_sub(pv).to_string()
+                let delta = if lv >= pv {
+                    lv - pv
+                } else {
+                    u64::MAX - pv + lv
+                };
+                delta.to_string()
             })
             .collect();
-        if diffs.iter().any(|d| d == "0") {
-            warn!("get_cpu_time_diff: one or more CPU time deltas are zero, skipping");
+        if diffs.iter().all(|d| d == "0") {
+            warn!("get_cpu_time_diff: all CPU time deltas are zero, skipping");
             return None;
         }
         Some(MultiValuedRecord::new(last.timestamp, diffs, last.units.clone()))
@@ -1563,7 +1569,7 @@ impl Topology {
                 .unwrap_or(0)
         }).collect();
         let proportions: Vec<f64> = cores.iter().enumerate().map(|(i, c)| {
-            if total_ns[i] > 0 { core_time_deltas[c.id as usize] as f64 / total_ns[i] as f64 } else { 0.0 }
+            if total_ns[i] > 0 { (core_time_deltas[c.id as usize] as f64 / total_ns[i] as f64).min(1.0) } else { 0.0 }
         }).collect();
         let proc_ns: Vec<u64> = cores.iter().map(|c| core_time_deltas[c.id as usize]).collect();
         Some((proc_ns, total_ns, proportions))
