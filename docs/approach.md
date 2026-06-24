@@ -2,12 +2,16 @@
 
 This document explains how Scaphandre estimates the power consumption of each individual CPU core. The goal is to go beyond a single host-level power reading and say *"core 0 used X microwatts, core 1 used Y microwatts"* — without any hardware support for per-core power sensors.
 
-This document records two iterations of the delta-based method:
+This document is a complete history of every approach tried and the reasons for moving between them:
 
-- `v_delta_of_delta`: the original approach.
-- `v_corrected_delta_of_delta`: the current approach.
+- Pre-history: absolute proportional allocation (rejected — see motivation section).
+- `v_delta_of_delta`: original delta-based attribution.
+- `v_corrected_delta_of_delta`: anchored delta attribution.
+- `v_host_constrained_observer`: AI-assisted experiment — predict–correct observer loop.
+- `v_diff_pid`: AI-assisted experiment — diff nudge + scalar PID.
+- `v_propo_preserving_delta_of_delta`: current approach — sign-validated, muffled, recalibrated, proportionality-preserving delta attribution scoped to the CPU domain.
 
-Before those two versions, there was a simpler absolute proportional allocation method. It is included below only as motivation for why the delta-based model was introduced.
+Before those versions, there was a simpler absolute proportional allocation method. It is included below only as motivation for why the delta-based model was introduced.
 
 ---
 
@@ -351,7 +355,9 @@ The remaining limitation is that this anchoring constrains a single update, but 
 
 ---
 
-### v_diff_pid — Current approach
+### v_diff_pid — AI-assisted experiment (reverted)
+
+> **Note:** This version was designed with significant AI assistance for the algorithmic details. It was implemented and then reverted. The design is preserved here as a record of the exploration.
 
 The two previous versions accumulated absolute per-core power estimates and applied corrections on top of them. The structural problem with that design was that any large spike would inflate the absolute state, and later measurements could not force it back down — the correction was applied to the current update, not to the running total.
 
@@ -489,7 +495,9 @@ The PID state is two scalars (`core_pid_integral`, `last_residual`), not a per-c
 
 ---
 
-### v_host_constrained_observer — Current approach
+### v_host_constrained_observer — AI-assisted experiment (reverted)
+
+> **Note:** This version was designed with significant AI assistance for the algorithmic details. It was implemented and then reverted. The design is preserved here as a record of the exploration.
 
 `v_corrected_delta_of_delta` fixed the scaling problem of the original version but left one structural limitation: the correction step operated on a single update and had no mechanism to pull the accumulated absolute state back toward reality when later samples were weak. A large spike could leave the running per-core totals inflated indefinitely.
 
@@ -660,4 +668,99 @@ On the first sample there is no previous state to predict from. The reference al
 | Blend | `blend_core_powers_with_reference` | Softly pull drifted estimates back toward the reference; capped at 20% of the gap |
 | Normalize | `normalize_core_powers_to_host` | Hard-enforce `Σfinal == host_power` |
 
-The remaining limitation of this approach is that the correction and blend are applied per-cycle but do not accumulate state about how persistently the estimate has deviated. A core that is consistently 10% too high will be nudged down each cycle, but the nudge size is the same on cycle 2 as it is on cycle 200. That persistent steady-state bias is what the successor (`v_diff_pid`) addresses with an integral term.
+The remaining limitation of this approach is that the correction and blend are applied per-cycle but do not accumulate state about how persistently the estimate has deviated. A core that is consistently 10% too high will be nudged down each cycle, but the nudge size is the same on cycle 2 as it is on cycle 200. That persistent steady-state bias is what `v_diff_pid` (below) attempted to address with an integral term. Both this version and `v_diff_pid` were reverted in favour of returning to the delta-based foundation with targeted fixes.
+
+---
+
+### v_propo_preserving_delta_of_delta — Current approach
+
+After the two AI-assisted experiments (`v_host_constrained_observer` and `v_diff_pid`) were reverted, the decision was to go back to the corrected delta-of-delta foundation and address its concrete failure modes one at a time rather than replacing the whole architecture.
+
+The remaining problems with `v_corrected_delta_of_delta` were:
+
+1. **No signal validity check.** The algorithm would attribute a power delta to cores even when the direction of the host power change contradicted the direction of aggregate core activity — a physically implausible situation.
+2. **Noise from non-CPU power.** Using the full package RAPL reading meant that DRAM and uncore power swings were leaking into the per-core attribution.
+3. **Unconstrained drift.** The cumulative state could drift to negative values for individual cores, and there was no mechanism to pull it back.
+4. **Overconfident deltas.** A large coefficient change in one interval could produce a proportionally large power change even if the coefficient's absolute level was already very high — the delta was interpreted in isolation rather than relative to the baseline.
+5. **History-driven allocation.** Once a core's accumulated power was pushed high, it stayed high even if later samples indicated lower activity, because each interval only added the delta and never re-anchored to absolute activity.
+
+Each of these is addressed by a specific addition described below. See also [`docs/latest.md`](latest.md) for the detailed derivation of the proportionality-preserving step.
+
+#### Addition 1 — CPU-domain scoping
+
+Power tracking is now scoped to the CPU RAPL sub-domain only (not the full package). Core coefficients measure CPU computation; the delta they are matched against should also reflect CPU power only. DRAM and uncore are excluded. See [`docs/fixes.md`](fixes.md) for details on the domain lookup logic.
+
+#### Addition 2 — Sign consistency check
+
+Before attribution:
+
+```
+if power_delta × net_coef_change < 0 → return previous core powers unchanged
+```
+
+`net_coef_change = Σ Δcoef_i`. If the host CPU power went up but total core activity went down (or vice versa), the two signals are contradictory. The sample is skipped and the last known per-core powers are returned unchanged.
+
+#### Addition 3 — Delta muffling by relative coefficient change
+
+Each core's delta is attenuated before being applied:
+
+```
+attenuation_i = clamp(|Δcoef_i| / before_last_coef_i, 0, 1)
+candidate_i   = prev_power_i + attenuation_i × power_change_i
+```
+
+`before_last_coef_i` is the core's coefficient from the second-to-last measurement — the baseline the current delta is measured against. A core whose coefficient barely moved relative to its prior level gets its delta heavily damped. A core whose coefficient shifted dramatically passes the delta through at full strength.
+
+The rationale: the attribution algorithm assumes the power change is proportional to the coefficient change. That assumption is most credible when the coefficient change is large relative to where the coefficient already was. When the coefficient change is tiny compared to the baseline, the signal-to-noise ratio is low and the delta should be trusted less.
+
+Falls back to `attenuation = 1.0` when `before_last_coef_i` is zero or unavailable.
+
+#### Addition 4 — Negative-core recalibration
+
+After the attenuated delta:
+
+```
+if candidate_i < 0:
+    power_i = coef_to_power × before_last_coef_i
+```
+
+A negative value means the accumulated estimate has drifted below zero. There is no ground truth to correct against at that point, so the core's power is reset to `coef_to_power × before_last_coef_i` — the power implied by applying the current scale factor to the core's last known coefficient level. This provides a physically plausible re-anchor without touching cores that still have valid positive values.
+
+#### Addition 5 — Proportionality-preserving rescale
+
+After muffling and recalibration, the per-core values are rescaled so each core's share of total power matches its share of the current total coefficient:
+
+```
+power_i = coef_i × (Σ power_j / Σ coef_j)
+```
+
+The total power magnitude is preserved; only the distribution is adjusted. This eliminates the history-drift problem: a core that was active in the past but is now nearly idle will have its estimate pulled down; one that just became active will be pulled up. The coefficient directly reflects current-interval activity, so the rescale continuously anchors the absolute estimate to the present rather than the past.
+
+Skipped when either sum is zero.
+
+#### Addition 6 — Socket-level rescale
+
+If a socket-level CPU power reading is available, the per-core vector is rescaled to exactly match it:
+
+```
+residual = socket_cpu_power − Σ power_i
+power_i  = power_i + (power_i / Σ power_i) × residual
+```
+
+This hard outer constraint grounds the vector to the measured socket total at every cycle.
+
+#### Current pipeline
+
+| Step | What happens |
+|------|-------------|
+| 1 | Compute per-core coefficient from APERF, MPERF, IPC |
+| 2 | Read CPU-domain RAPL power only |
+| 3 | Compute CPU power delta (`power_delta`) and coef diffs |
+| 4 | Reject if `power_delta × net_coef_change < 0` |
+| 5 | Attribute delta to cores (Cases 1–3 from `v_corrected_delta_of_delta`) |
+| 6 | Muffle each core's delta: `attenuation = clamp(\|Δcoef\| / before_last_coef, 0, 1)` |
+| 7 | Replace any negative result with `coef_to_power × before_last_coef` |
+| 8 | Proportionality rescale: `power_i = coef_i × (Σpower / Σcoef)` |
+| 9 | Socket rescale: normalise so `Σpower_i = socket_cpu_power` |
+| 10 | Update `coef_to_power` running average |
+
