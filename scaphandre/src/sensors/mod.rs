@@ -88,6 +88,10 @@ pub struct Topology {
     pub cpu_state_buffer: Option<RingBuf<MapData>>,
     /// Ring buffer per socket event buffer
     pub activation_idle_buffer: HashMap<u16, Vec<CpuStateEvent>>,
+    /// eBPF CPU_TIME array map — per-logical-CPU accumulated busy nanoseconds
+    pub cpu_time_map: Option<Array<MapData, u64>>,
+    /// Buffer of per-CPU total busy time snapshots (nanoseconds, one MultiValuedRecord per sample)
+    pub cpu_time_buffer: Vec<MultiValuedRecord>,
 }
 
 impl std::fmt::Debug for Topology {
@@ -196,6 +200,8 @@ impl Clone for Topology {
             ebpf: None, // Ebpf handles cannot be cloned; cloned topologies won't track eBPF data
             cpu_state_buffer: None,
             activation_idle_buffer: self.activation_idle_buffer.clone(),
+            cpu_time_map: None,
+            cpu_time_buffer: self.cpu_time_buffer.clone(),
         }
     }
 }
@@ -211,6 +217,9 @@ impl Topology {
             }
         }
         let cpu_state_buffer = ebpf.as_mut().and_then(crate::bpf::take_cpu_state_buffer);
+        let cpu_time_map = ebpf.as_mut().and_then(|e| {
+            e.take_map("CPU_TIME").and_then(|m| Array::<MapData, u64>::try_from(m).ok())
+        });
         Topology {
             sockets: vec![],
             proc_tracker: ProcessTracker::new(5, ebpf.as_mut()),
@@ -222,6 +231,8 @@ impl Topology {
             ebpf,
             cpu_state_buffer,
             activation_idle_buffer: HashMap::new(),
+            cpu_time_map,
+            cpu_time_buffer: vec![],
         }
     }
 
@@ -973,6 +984,7 @@ impl Topology {
         self.proc_tracker.refresh();
         self.refresh_core_idle_records();
         self.refresh_procs();
+        self.refresh_cpu_time_record();
         self.refresh_record();
         self.refresh_stats();
     }
@@ -998,6 +1010,61 @@ impl Topology {
                 }
             }
         }
+    }
+
+    /// Reads current per-CPU busy nanoseconds from the eBPF CPU_TIME map and appends to cpu_time_buffer.
+    fn refresh_cpu_time_record(&mut self) {
+        if let Some(map) = &self.cpu_time_map {
+            let nb_cores = self.proc_tracker.nb_cores;
+            let values: Vec<String> = (0..nb_cores)
+                .map(|i| map.get(&(i as u32), 0).unwrap_or(0).to_string())
+                .collect();
+            let units = vec![units::Unit::Numeric; nb_cores]; // nanoseconds of CPU time
+            self.cpu_time_buffer.push(MultiValuedRecord::new(
+                current_system_time_since_epoch(),
+                values,
+                units,
+            ));
+            self.clean_old_cpu_time_records();
+        }
+    }
+
+    fn clean_old_cpu_time_records(&mut self) {
+        if self.cpu_time_buffer.is_empty() { return; }
+        let record_size = size_of_val(&self.cpu_time_buffer[0]);
+        let curr_size = record_size * self.cpu_time_buffer.len();
+        if curr_size > (self.buffer_max_kbytes * 1000) as usize {
+            let size_diff = curr_size - (self.buffer_max_kbytes * 1000) as usize;
+            if size_diff > record_size {
+                let nb_to_delete = (size_diff as f32 / record_size as f32) as usize;
+                for _ in 0..nb_to_delete {
+                    if !self.cpu_time_buffer.is_empty() {
+                        self.cpu_time_buffer.remove(0);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns the per-CPU busy nanosecond delta between the last two cpu_time_buffer entries.
+    /// Returns None if any CPU delta is zero (no elapsed CPU time — cannot compute a meaningful ratio).
+    pub fn get_cpu_time_diff(&self) -> Option<MultiValuedRecord> {
+        let len = self.cpu_time_buffer.len();
+        if len < 2 { return None; }
+        let last = self.cpu_time_buffer.last().unwrap();
+        let prev = &self.cpu_time_buffer[len - 2];
+        let diffs: Vec<String> = last.values.iter().zip(prev.values.iter())
+            .map(|(l, p)| {
+                let lv = l.parse::<u64>().unwrap_or(0);
+                let pv = p.parse::<u64>().unwrap_or(0);
+                lv.saturating_sub(pv).to_string()
+            })
+            .collect();
+        if diffs.iter().any(|d| d == "0") {
+            warn!("get_cpu_time_diff: one or more CPU time deltas are zero, skipping");
+            return None;
+        }
+        Some(MultiValuedRecord::new(last.timestamp, diffs, last.units.clone()))
     }
 
     /// Gets currents stats and stores them as a CPUStat instance in self.stat_buffer
@@ -1500,21 +1567,21 @@ impl Topology {
                     core_time_deltas.iter().map(|v| v.to_string()).collect::<Vec<String>>().join(", "),
                     cores.iter().map(|c| c.id.to_string()).collect::<Vec<String>>().join(", "),
                 );
-                core_percentages = Some(
-                    cores.iter().enumerate().map(|t| {
-                        if let Some(core_metrics) = &cores_metrics[t.0] {
-                            if core_metrics.active_time != 0 {
-                                let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
-                                let active_time_ns = core_metrics.active_time * 1_000_000_000 / ticks_per_sec;
-                                core_time_deltas[t.1.id as usize] as f64 / active_time_ns as f64
+                if let Some(cpu_time_diff) = self.get_cpu_time_diff() {
+                    core_percentages = Some(
+                        cores.iter().enumerate().map(|t| {
+                            let cpu_total_ns = cpu_time_diff.values
+                                .get(t.1.id as usize)
+                                .and_then(|v| v.parse::<u64>().ok())
+                                .unwrap_or(0);
+                            if cpu_total_ns > 0 {
+                                core_time_deltas[t.1.id as usize] as f64 / cpu_total_ns as f64
                             } else {
                                 0_f64
                             }
-                        } else {
-                            0.0_f64
-                        }
-                    }).collect()
-                )
+                        }).collect()
+                    );
+                }
             }
             if let Some(process_cpu_percentage) = self.get_proc_tracker().get_process_cpu_time_delta_as_percentage(pid) {
                 if core_percentages.is_none() {
