@@ -712,6 +712,22 @@ impl CPUSocket {
                             }
                         })
                         .collect();
+                    // Rescale so each core's share of total power matches its share of total coef.
+                    // power_i = coef_i * (sum_power / sum_coef)
+                    let new_values: Vec<f64> = {
+                        let current_coefs: Vec<f64> = self.core_coef_buffer.last()
+                            .map(|r| r.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect())
+                            .unwrap_or_default();
+                        let sum_coef: f64 = current_coefs.iter().sum();
+                        let sum_power: f64 = new_values.iter().sum();
+                        if sum_coef > 0.0 && sum_power > 0.0 {
+                            current_coefs.iter()
+                                .map(|c| c * (sum_power / sum_coef))
+                                .collect()
+                        } else {
+                            new_values
+                        }
+                    };
                     let new_values: Vec<String> = if let Some(socket_cpu_power) = self.cpu_power_buffer
                         .iter()
                         .last()
