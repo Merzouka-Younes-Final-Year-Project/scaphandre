@@ -1552,50 +1552,46 @@ impl Topology {
 
     /// NOTE: TO MODIFY
     /// Returns the power consumed between last and previous measurement for a given process ID, in microwatts
+    /// Returns (process_ns, total_ns, proportions) per logical CPU from eBPF data, or None if unavailable.
+    fn get_process_core_time_data(&self, pid: Pid) -> Option<(Vec<u64>, Vec<u64>, Vec<f64>)> {
+        let cores = self.get_cores();
+        let core_time_deltas = self.get_proc_tracker().get_per_core_cpu_time_delta(pid)?;
+        let cpu_time_diff = self.get_cpu_time_diff()?;
+        let total_ns: Vec<u64> = cores.iter().map(|c| {
+            cpu_time_diff.values.get(c.id as usize)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+        }).collect();
+        let proportions: Vec<f64> = cores.iter().enumerate().map(|(i, c)| {
+            if total_ns[i] > 0 { core_time_deltas[c.id as usize] as f64 / total_ns[i] as f64 } else { 0.0 }
+        }).collect();
+        let proc_ns: Vec<u64> = cores.iter().map(|c| core_time_deltas[c.id as usize]).collect();
+        Some((proc_ns, total_ns, proportions))
+    }
+
+    /// Returns per-core proportions for process power attribution.
+    /// Uses eBPF data when available, falls back to OS cpu_time_percentage.
+    fn get_process_core_proportions(&self, pid: Pid) -> Option<Vec<f64>> {
+        if let Some((_, _, proportions)) = self.get_process_core_time_data(pid) {
+            return Some(proportions);
+        }
+        let cores_metrics: Vec<Option<CPUCoreMetrics>> = self.get_cores().iter()
+            .map(|c| c.get_core_metrics_delta())
+            .collect();
+        let process_cpu_percentage = self.get_proc_tracker().get_process_cpu_time_delta_as_percentage(pid)?;
+        debug!("Falling back to standard non-EBPF method");
+        Some(cores_metrics.iter().map(|o| {
+            o.as_ref().map(|m| (process_cpu_percentage / 100.0) * (m.cpu_time_percentage / 100.0))
+                .unwrap_or(0.0)
+        }).collect())
+    }
+
     pub fn get_all_per_process(&self, pid: Pid) -> Option<HashMap<String, (String, Record)>> {
         let mut res = HashMap::new();
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
-            let mut core_percentages: Option<Vec<f64>> = None;
-            let cores: Vec<CPUCore> = self.get_cores();
-            let cores_metrics: Vec<Option<CPUCoreMetrics>> = cores
-                .iter()
-                .map(|c| c.get_core_metrics_delta())
-                .collect();
-            if let Some(core_time_deltas) = self.get_proc_tracker().get_per_core_cpu_time_delta(pid) {
-                debug!(
-                    "Gotten EBPF per core times process {pid}: {}, Core IDs: {}",
-                    core_time_deltas.iter().map(|v| v.to_string()).collect::<Vec<String>>().join(", "),
-                    cores.iter().map(|c| c.id.to_string()).collect::<Vec<String>>().join(", "),
-                );
-                if let Some(cpu_time_diff) = self.get_cpu_time_diff() {
-                    core_percentages = Some(
-                        cores.iter().enumerate().map(|t| {
-                            let cpu_total_ns = cpu_time_diff.values
-                                .get(t.1.id as usize)
-                                .and_then(|v| v.parse::<u64>().ok())
-                                .unwrap_or(0);
-                            if cpu_total_ns > 0 {
-                                core_time_deltas[t.1.id as usize] as f64 / cpu_total_ns as f64
-                            } else {
-                                0_f64
-                            }
-                        }).collect()
-                    );
-                }
-            }
+            let ebpf_core_data = self.get_process_core_time_data(pid);
+            let core_percentages = self.get_process_core_proportions(pid);
             if let Some(process_cpu_percentage) = self.get_proc_tracker().get_process_cpu_time_delta_as_percentage(pid) {
-                if core_percentages.is_none() {
-                    debug!("Falling back to standard non-EBPF method");
-                    core_percentages = Some(
-                        cores_metrics
-                            .iter()
-                            .map(|o| {
-                                o.as_ref().map(|metrics| {
-                                    (process_cpu_percentage / 100.0_f64) * (metrics.cpu_time_percentage / 100.0_f64)
-                                }).unwrap_or(0.0_f64)
-                            }).collect()
-                    );
-                }
                 res.insert(
                     String::from("scaph_process_cpu_usage_percentage"),
                     (String::from("CPU time consumed by the process, as a percentage of the capacity of all the CPU Cores"),
@@ -1693,6 +1689,29 @@ impl Topology {
                         Record::new(record.timestamp, result.to_string(), units::Unit::MicroWatt),
                     ),
                 );
+                if let Some((proc_ns, total_ns, proportions)) = &ebpf_core_data {
+                    res.insert(
+                        String::from("scaph_process_core_time_ns"),
+                        (
+                            String::from("Per-core process busy time delta in nanoseconds (CSV, indexed by logical CPU)"),
+                            Record::new(record.timestamp, proc_ns.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","), units::Unit::Numeric),
+                        ),
+                    );
+                    res.insert(
+                        String::from("scaph_process_core_total_time_ns"),
+                        (
+                            String::from("Per-core total CPU busy time delta in nanoseconds (CSV, indexed by logical CPU)"),
+                            Record::new(record.timestamp, total_ns.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","), units::Unit::Numeric),
+                        ),
+                    );
+                    res.insert(
+                        String::from("scaph_process_core_proportion"),
+                        (
+                            String::from("Per-core fraction of CPU time used by this process (CSV, indexed by logical CPU)"),
+                            Record::new(record.timestamp, proportions.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","), units::Unit::Numeric),
+                        ),
+                    );
+                }
             }
         }
         Some(res)

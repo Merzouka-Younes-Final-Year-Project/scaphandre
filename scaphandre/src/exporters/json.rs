@@ -99,6 +99,16 @@ struct Socket {
 }
 
 #[derive(Serialize, Deserialize)]
+struct CoreTimes {
+    /// Per-core process busy nanoseconds (indexed by logical CPU)
+    process_ns: Vec<u64>,
+    /// Per-core total CPU busy nanoseconds (indexed by logical CPU)
+    total_ns: Vec<u64>,
+    /// Per-core fraction of CPU time used by this process
+    proportion: Vec<f64>,
+}
+
+#[derive(Serialize, Deserialize)]
 struct Consumer {
     exe: PathBuf,
     cmdline: String,
@@ -107,6 +117,7 @@ struct Consumer {
     consumption: f32,
     timestamp: f64,
     container: Option<Container>,
+    core_times: Option<CoreTimes>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -409,6 +420,20 @@ impl JsonExporter {
                         consumption: format!("{}", metric.metric_value).parse::<f32>().unwrap(),
                         resources_usage: None,
                         timestamp: metric.timestamp.as_secs_f64(),
+                        core_times: {
+                            let pid_str = process.pid.to_string();
+                            let proc_ns = metrics.iter().find(|x| x.name == "scaph_process_core_time_ns" && x.attributes.get("pid").map(|p| p == &pid_str).unwrap_or(false));
+                            let total_ns = metrics.iter().find(|x| x.name == "scaph_process_core_total_time_ns" && x.attributes.get("pid").map(|p| p == &pid_str).unwrap_or(false));
+                            let prop = metrics.iter().find(|x| x.name == "scaph_process_core_proportion" && x.attributes.get("pid").map(|p| p == &pid_str).unwrap_or(false));
+                            match (proc_ns, total_ns, prop) {
+                                (Some(pn), Some(tn), Some(pr)) => {
+                                    let parse_csv_u64 = |m: &Metric| format!("{}", m.metric_value).split(',').filter_map(|s| s.parse::<u64>().ok()).collect::<Vec<_>>();
+                                    let parse_csv_f64 = |m: &Metric| format!("{}", m.metric_value).split(',').filter_map(|s| s.parse::<f64>().ok()).collect::<Vec<_>>();
+                                    Some(CoreTimes { process_ns: parse_csv_u64(pn), total_ns: parse_csv_u64(tn), proportion: parse_csv_f64(pr) })
+                                }
+                                _ => None,
+                            }
+                        },
                         container: if self.watch_containers {
                             metric
                                 .attributes
