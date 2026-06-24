@@ -696,7 +696,12 @@ impl CPUSocket {
                         .zip(core_power_changes.iter())
                         .enumerate()
                         .map(|(i, (prev, delta))| {
-                            let v = prev + delta;
+                            let attenuation = before_last_coefs.as_ref()
+                                .and_then(|c| c.get(i))
+                                .filter(|&&b| b > 0.0)
+                                .map(|&b| (coef_diffs[i].abs() / b).min(1.0))
+                                .unwrap_or(1.0);
+                            let v = prev + attenuation * delta;
                             if v < 0.0 {
                                 before_last_coefs.as_ref()
                                     .and_then(|c| c.get(i))
