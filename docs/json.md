@@ -38,7 +38,7 @@ Each measurement cycle the JSON exporter writes a single JSON object to stdout o
 }
 ```
 
-`consumption` is the total host power in microwatts at this timestamp. `activation` and `background` are optional breakdowns of that total.
+`consumption` is the total host power in microwatts at this timestamp, with background power already subtracted. `activation` and `background` are optional breakdowns of that total.
 
 ## `sockets` array and `domains`
 
@@ -77,7 +77,7 @@ Each socket entry contains a `domains` array. Each domain entry describes one RA
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | RAPL domain name (`core`, `uncore`, `dram`) or `idle` |
-| `consumption` | float | Net power consumed by this domain in microwatts (background already subtracted) |
+| `consumption` | float | Power consumed by this domain in microwatts, with `background` already subtracted |
 | `timestamp` | float | Unix timestamp (seconds) of this measurement |
 | `background` | float \| null | Background power allocated to this domain in microwatts, proportional to its share of total socket domain power. `null` for the synthetic `idle` entry. |
 
@@ -155,7 +155,13 @@ where `abs_power_delta_total` is derived from the measured change in host-level 
 consumption[t] = consumption[t-1] + power_change_microwatts[t]
 ```
 
-So `consumption` is the absolute estimate and `power_change_microwatts` is the interval delta that produced it.
+When socket-level CPU power is available, the per-core values are rescaled so their sum matches it exactly:
+
+```
+rescaled_i = consumption_i + (consumption_i / sum_j(consumption_j)) × residual
+```
+
+where `residual = socket_cpu_power − sum_j(consumption_j)`. As a result, individual core `consumption` values may be negative if a core's estimated power drops below zero during this adjustment. `power_change_microwatts` is the interval delta before rescaling.
 
 ### `coefficient_diff_proportion`
 
