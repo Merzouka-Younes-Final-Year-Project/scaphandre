@@ -31,6 +31,8 @@ use std::cmp::{max, min};
 use perf_event::{Builder, Counter};
 use perf_event::events::Hardware;
 
+use crate::sensors::powercap_rapl::DomainResource;
+
 // !!!!!!!!!!!!!!!!! Sensor !!!!!!!!!!!!!!!!!!!!!!!
 /// Sensor trait, the Sensor API.
 pub trait Sensor {
@@ -86,14 +88,6 @@ pub struct Topology {
     pub cpu_state_buffer: Option<RingBuf<MapData>>,
     /// Ring buffer per socket event buffer
     pub activation_idle_buffer: HashMap<u16, Vec<CpuStateEvent>>,
-    /// Buffer of core coefficients
-    pub core_coef_buffer: Vec<MultiValuedRecord>,
-    /// Buffer of core power
-    pub core_power_buffer: Vec<MultiValuedRecord>,
-    /// Buffer of host power
-    pub power_buffer: Vec<Record>,
-    /// A constant used to map coefficient diffs to core power diffs
-    pub coef_to_power: f64,
 }
 
 impl std::fmt::Debug for Topology {
@@ -202,10 +196,6 @@ impl Clone for Topology {
             ebpf: None, // Ebpf handles cannot be cloned; cloned topologies won't track eBPF data
             cpu_state_buffer: None,
             activation_idle_buffer: self.activation_idle_buffer.clone(),
-            core_coef_buffer: self.core_coef_buffer.clone(),
-            core_power_buffer: self.core_power_buffer.clone(),
-            power_buffer: self.power_buffer.clone(),
-            coef_to_power: self.coef_to_power,
         }
     }
 }
@@ -232,10 +222,6 @@ impl Topology {
             ebpf,
             cpu_state_buffer,
             activation_idle_buffer: HashMap::new(),
-            core_coef_buffer: vec![],
-            core_power_buffer: vec![],
-            power_buffer: vec![],
-            coef_to_power: 0.0,
         }
     }
 
@@ -409,7 +395,7 @@ impl Topology {
     /// Refresh cpuidle idle time records for all cores in all sockets.
     fn refresh_core_idle_records(&mut self) {
         for socket in &mut self.sockets {
-            for core in socket.get_cores() {
+            for core in socket.get_cores_mut() {
                 core.refresh_record();
             }
         }
@@ -457,14 +443,11 @@ fn populate_cpu_to_socket_map(ebpf: &mut Ebpf) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// logic for per core power calculation
-impl Topology {
+// logic for per CORE power calculation
+impl CPUSocket {
     /// Returns the set of cores in all sockets
     pub fn get_cores(&self) -> Vec<CPUCore> {
-        let mut cores = self.sockets
-            .iter()
-            .flat_map(|s| s.cpu_cores.iter().cloned())
-            .collect::<Vec<CPUCore>>();
+        let mut cores = self.cpu_cores.clone();
         cores.sort_by_key(|c| c.id);
         cores
     }
@@ -497,7 +480,7 @@ impl Topology {
     /// Returns a MultiValuedRecord instance containing the per-core power consumed between
     /// last and previous measurement, in microwatts.
     pub fn get_proportional_core_diff_power_microwatts(&self) -> Option<MultiValuedRecord> {
-        if let Some(conso) = self.get_records_diff_power_microwatts()
+        if let Some(conso) = self.get_records_diff_power_microwatts_per_domain(&DomainResource::CPU.to_string())
             .and_then(|r| r.value.parse::<f64>().ok()) {
             debug!("Using formula v_enhanced_ipc_aperf_aperf_div_mperf");
             let energies = self.get_core_proportions().iter().map(|p| p * conso).collect::<Vec<f64>>();
@@ -579,31 +562,31 @@ impl Topology {
     }
 
     /// Returns the current host power consumption as a Record (in microwatts).
-    pub fn read_power_record(&self) -> Option<Record> {
-        self.get_records_diff_power_microwatts()
+    pub fn read_cpu_power_record(&self) -> Option<Record> {
+        self.get_records_diff_power_microwatts_per_domain(&DomainResource::CPU.to_string())
     }
 
     /// Reads the current host power and appends it to `power_buffer`.
-    pub fn refresh_power_record(&mut self) {
-        if let Some(record) = self.read_power_record() {
-            self.power_buffer.push(record);
+    pub fn refresh_cpu_power_record(&mut self) {
+        if let Some(record) = self.read_cpu_power_record() {
+            self.cpu_power_buffer.push(record);
         }
-        if !self.power_buffer.is_empty() {
-            self.clean_old_power_records();
+        if !self.cpu_power_buffer.is_empty() {
+            self.clean_old_cpu_power_records();
         }
     }
 
     /// Removes old entries from `power_buffer` to stay within `buffer_max_kbytes`.
-    fn clean_old_power_records(&mut self) {
-        let record_size = size_of_val(&self.power_buffer[0]);
-        let curr_size = record_size * self.power_buffer.len();
+    fn clean_old_cpu_power_records(&mut self) {
+        let record_size = size_of_val(&self.cpu_power_buffer[0]);
+        let curr_size = record_size * self.cpu_power_buffer.len();
         if curr_size > (self.buffer_max_kbytes * 1000) as usize {
             let size_diff = curr_size - (self.buffer_max_kbytes * 1000) as usize;
             if size_diff > record_size {
                 let nb_to_delete = (size_diff as f32 / record_size as f32) as u32;
                 for _ in 1..nb_to_delete {
-                    if !self.power_buffer.is_empty() {
-                        let res = self.power_buffer.remove(0);
+                    if !self.cpu_power_buffer.is_empty() {
+                        let res = self.cpu_power_buffer.remove(0);
                         debug!("Cleaning power buffer on Topology, removing: {:?}", res);
                     }
                 }
@@ -612,21 +595,21 @@ impl Topology {
     }
 
     /// Returns a copy of all records in `power_buffer`.
-    fn get_power_records_passive(&self) -> Vec<Record> {
-        self.power_buffer.iter().map(|r| {
+    fn get_cpu_power_records_passive(&self) -> Vec<Record> {
+        self.cpu_power_buffer.iter().map(|r| {
             Record::new(r.timestamp, r.value.clone(), units::Unit::MicroWatt)
         }).collect()
     }
 
     /// Returns the signed change in host power between the last two entries in `power_buffer`,
     /// in microwatts. Positive means power increased; negative means it decreased.
-    pub fn get_records_diff_power_diff_microwatts(&self) -> Option<Record> {
-        let len = self.power_buffer.len();
+    pub fn get_records_diff_cpu_power_diff_microwatts(&self) -> Option<Record> {
+        let len = self.cpu_power_buffer.len();
         if len < 2 {
             return None;
         }
-        let last = self.power_buffer.last().unwrap();
-        let prev = &self.power_buffer[len - 2];
+        let last = self.cpu_power_buffer.last().unwrap();
+        let prev = &self.cpu_power_buffer[len - 2];
         let lv = last.value.trim().parse::<i64>().ok()?;
         let pv = prev.value.trim().parse::<i64>().ok()?;
         Some(Record::new(last.timestamp, (lv - pv).to_string(), units::Unit::MicroWatt))
@@ -672,7 +655,7 @@ impl Topology {
             .map(|r| r.values.iter().map(|v| v.parse::<f64>().unwrap_or(0.0)).collect::<Vec<f64>>())
         {
             debug!("CORE coef diffs: {}", coef_diffs.iter().map(|c| c.to_string()).collect::<Vec<String>>().join(", "));
-            if let Some(power_delta) = self.get_records_diff_power_diff_microwatts()
+            if let Some(power_delta) = self.get_records_diff_cpu_power_diff_microwatts()
                 .as_ref()
                 .and_then(|r| r.value.parse::<i64>().ok())
             {
@@ -915,8 +898,12 @@ impl Topology {
         for (s, records) in self.sockets.iter_mut().zip(idle_records) {
             // refresh each socket with new record
             s.refresh_activation_idle_records(records);
+            s.distribute_background_to_domains();
             s.refresh_record();
             s.refresh_stats();
+            s.refresh_cpu_power_record();
+            s.refresh_core_coefs_record();
+            s.refresh_core_powers_record();
             let domains = s.get_domains();
             for d in domains {
                 d.refresh_record();
@@ -930,9 +917,6 @@ impl Topology {
         self.refresh_core_idle_records();
         self.refresh_procs();
         self.refresh_record();
-        self.refresh_power_record();
-        self.refresh_core_coefs_record();
-        self.refresh_core_powers_record();
         self.refresh_stats();
     }
 
@@ -1363,6 +1347,85 @@ impl Topology {
         None
     }
 
+    /// Returns the set of cores in all sockets
+    pub fn get_cores(&self) -> Vec<CPUCore> {
+        let mut cores: Vec<CPUCore> = self.sockets.iter().flat_map(|s| s.get_cores()).collect();
+        cores.sort_by_key(|c| c.id);
+        cores
+    }
+
+    pub fn get_core_powers_microwatts(&self) -> Option<MultiValuedRecord> {
+        let mut v: Vec<(u16, String)> = vec![];
+        for s in &self.sockets {
+            let core_ids: Vec<u16> = s.get_cores().iter().map(|c| c.id).collect();
+            let powers = s.get_core_powers_microwatts()?.values;
+            let mut tmp: Vec<(u16, String)> = core_ids.into_iter().zip(powers.into_iter()).collect();
+            v.append(&mut tmp);
+        }
+        v.sort_by_key(|(id, _)| *id);
+        Some(MultiValuedRecord::new(
+            current_system_time_since_epoch(),
+            v.iter().map(|t| t.1.clone()).collect(),
+            v.iter().map(|_| units::Unit::MicroWatt).collect(),
+        ))
+    }
+
+    pub fn get_core_coefs(&self) -> Vec<f64> {
+        let mut v: Vec<(u16, f64)> = self.sockets.iter()
+            .flat_map(|s| {
+                let ids: Vec<u16> = s.get_cores().iter().map(|c| c.id).collect();
+                let coefs = s.get_core_coefs();
+                ids.into_iter().zip(coefs.into_iter())
+            })
+            .collect();
+        v.sort_by_key(|(id, _)| *id);
+        v.into_iter().map(|(_, coef)| coef).collect()
+    }
+
+    pub fn get_core_proportions(&self) -> Vec<f64> {
+        let coefs = self.get_core_coefs();
+        let total: f64 = coefs.iter().sum();
+        coefs.iter().map(|c| if total != 0.0 { c / total } else { 0.0 }).collect()
+    }
+
+    pub fn get_core_coefficient_diffs(&self) -> Option<Vec<f64>> {
+        let mut v: Vec<(u16, f64)> = vec![];
+        for s in &self.sockets {
+            let core_ids: Vec<u16> = s.get_cores().iter().map(|c| c.id).collect();
+            let diffs = s.get_core_coefficient_diffs()?;
+            for (id, diff) in core_ids.into_iter().zip(diffs.into_iter()) {
+                v.push((id, diff));
+            }
+        }
+        v.sort_by_key(|(id, _)| *id);
+        Some(v.into_iter().map(|(_, d)| d).collect())
+    }
+
+    pub fn get_core_power_changes_microwatts(&self) -> Option<Vec<f64>> {
+        let mut v: Vec<(u16, f64)> = vec![];
+        for s in &self.sockets {
+            let core_ids: Vec<u16> = s.get_cores().iter().map(|c| c.id).collect();
+            let changes = s.get_core_power_changes_microwatts()?;
+            for (id, change) in core_ids.into_iter().zip(changes.into_iter()) {
+                v.push((id, change));
+            }
+        }
+        v.sort_by_key(|(id, _)| *id);
+        Some(v.into_iter().map(|(_, c)| c).collect())
+    }
+
+    pub fn get_core_coefficient_diff_proportions(&self) -> Option<Vec<f64>> {
+        let diffs = self.get_core_coefficient_diffs()?;
+        let total: f64 = diffs.iter().map(|c| c.abs()).sum();
+        Some(diffs.iter().map(|c| if total != 0.0 { c.abs() / total } else { 0.0 }).collect())
+    }
+
+    pub fn get_core_power_change_proportions(&self) -> Option<Vec<f64>> {
+        let changes = self.get_core_power_changes_microwatts()?;
+        let total: f64 = changes.iter().map(|c| c.abs()).sum();
+        Some(changes.iter().map(|c| if total != 0.0 { c.abs() / total } else { 0.0 }).collect())
+    }
+
     /// NOTE: TO MODIFY
     /// Returns the power consumed between last and previous measurement for a given process ID, in microwatts
     pub fn get_all_per_process(&self, pid: Pid) -> Option<HashMap<String, (String, Record)>> {
@@ -1658,7 +1721,7 @@ pub struct CPUSocket {
     pub buffer_max_kbytes: u16,
 
     /// Idle comsumption records measured and stored by scaphandre for this socket.
-    pub activation_idle_record_buffer: Vec<MultiValuedRecord>,
+    pub activation_idle_buffer: Vec<MultiValuedRecord>,
 
     /// CPU cores (core_id in /proc/cpuinfo) attached to the socket.
     pub cpu_cores: Vec<CPUCore>,
@@ -1669,6 +1732,14 @@ pub struct CPUSocket {
     pub idle_percentage_threshold: f64,
     /// Maximum value of the RAPL energy counter before it wraps, in microjoules.
     pub rapl_max_uj: u64,
+    /// Buffer of core coefficients
+    pub core_coef_buffer: Vec<MultiValuedRecord>,
+    /// Buffer of core power
+    pub core_power_buffer: Vec<MultiValuedRecord>,
+    /// Buffer of socket-level power (microwatts)
+    pub cpu_power_buffer: Vec<Record>,
+    /// Running average of abs_power_delta_total / abs_coef_total, used as fallback scale
+    pub coef_to_power: f64,
     ///
     #[allow(dead_code)]
     pub sensor_data: HashMap<String, String>,
@@ -1730,9 +1801,9 @@ impl RecordGenerator for CPUSocket {
             }
         }
 
-        if !self.activation_idle_record_buffer.is_empty() {
-            let idle_record_ptr = &self.activation_idle_record_buffer[0];
-            let idle_curr_size = size_of_val(idle_record_ptr) * self.activation_idle_record_buffer.len();
+        if !self.activation_idle_buffer.is_empty() {
+            let idle_record_ptr = &self.activation_idle_buffer[0];
+            let idle_curr_size = size_of_val(idle_record_ptr) * self.activation_idle_buffer.len();
             trace!(
                 "socket idle record buffer current size: {} max_bytes: {}",
                 idle_curr_size,
@@ -1749,8 +1820,8 @@ impl RecordGenerator for CPUSocket {
                     let nb_records_to_delete =
                         size_diff as f32 / size_of_val(idle_record_ptr) as f32;
                     for _ in 1..nb_records_to_delete as u32 {
-                        if !self.activation_idle_record_buffer.is_empty() {
-                            let res = self.activation_idle_record_buffer.remove(0);
+                        if !self.activation_idle_buffer.is_empty() {
+                            let res = self.activation_idle_buffer.remove(0);
                             debug!(
                                 "Cleaning socket id {} idle records buffer, removing: {}",
                                 self.id, res
@@ -1794,13 +1865,17 @@ impl CPUSocket {
             counter_uj_path,
             record_buffer: vec![], // buffer has to be empty first
             buffer_max_kbytes,
-            activation_idle_record_buffer: vec![],
+            activation_idle_buffer: vec![],
             cpu_cores: vec![], // cores are instantiated on a later step
             stat_buffer: vec![],
             rapl_max_uj: sensor_data
                 .get("max_energy_range_uj")
                 .and_then(|v| v.trim().parse::<u64>().ok())
                 .unwrap_or(u64::MAX),
+            core_coef_buffer: vec![],
+            core_power_buffer: vec![],
+            cpu_power_buffer: vec![],
+            coef_to_power: 0.0,
             sensor_data,
             // idle_percentage_threshold: 0.95_f64,
             idle_percentage_threshold: 0.65_f64,
@@ -1829,7 +1904,7 @@ impl CPUSocket {
     }
 
     /// Returns a mutable reference to the CPU cores vector.
-    pub fn get_cores(&mut self) -> &mut Vec<CPUCore> {
+    pub fn get_cores_mut(&mut self) -> &mut Vec<CPUCore> {
         &mut self.cpu_cores
     }
 
@@ -1843,10 +1918,35 @@ impl CPUSocket {
         self.cpu_cores.push(core);
     }
 
+    /// Distributes socket-level background power proportionally across domains by their current power.
+    fn distribute_background_to_domains(&mut self) {
+        let background = self
+            .get_background_power_microwatts()
+            .and_then(|r| r.value.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        if background == 0.0 {
+            return;
+        }
+        let domain_powers: Vec<f64> = self
+            .domains
+            .iter()
+            .map(|d| d.get_records_diff_power_microwatts().and_then(|r| r.value.parse::<f64>().ok()).unwrap_or(0.0))
+            .collect();
+        let total: f64 = domain_powers.iter().sum();
+        let n = self.domains.len() as f64;
+        for (d, &power) in self.domains.iter_mut().zip(domain_powers.iter()) {
+            d.background_power_uw = if total > 0.0 {
+                background * (power / total)
+            } else {
+                background / n
+            };
+        }
+    }
+
     /// Refreshes activation and idle records
     fn refresh_activation_idle_records(&mut self, records: Vec<CpuStateEvent>) {
         if let Some(record) = self.read_activation_idle_record(records) {
-            self.activation_idle_record_buffer.push(record);
+            self.activation_idle_buffer.push(record);
         }
     }
 
@@ -1904,8 +2004,8 @@ impl CPUSocket {
     /// Returns current idle energy
     pub fn get_idle_power_microwatts(&self) -> Option<Record> {
         debug!("Inside idle power calculation function");
-        if !self.activation_idle_record_buffer.is_empty() {
-            let last = self.activation_idle_record_buffer.iter().last();
+        if !self.activation_idle_buffer.is_empty() {
+            let last = self.activation_idle_buffer.iter().last();
 
             if let Some(last) = last {
                 if last.values.len() >= 2 {
@@ -1927,8 +2027,8 @@ impl CPUSocket {
     /// Returns current activation energy
     pub fn get_activation_power_microwatts(&self) -> Option<Record> {
         debug!("Inside activation power calculation function");
-        if !self.activation_idle_record_buffer.is_empty() {
-            let last = self.activation_idle_record_buffer.iter().last();
+        if !self.activation_idle_buffer.is_empty() {
+            let last = self.activation_idle_buffer.iter().last();
 
             if let Some(last) = last {
                 if last.values.len() >= 2 {
@@ -2138,6 +2238,22 @@ impl CPUSocket {
         }
         None
     }
+
+    /// Returns the desired domain's power diff if available, else Package power diff
+    pub fn get_records_diff_power_microwatts_per_domain(&self, name: &str) -> Option<Record> {
+        if let Some(domain) = self.domains.iter().find(|d| {
+            if let Some(resource) = d.sensor_data.get("related_resource") {
+                resource == name
+            } else {
+                false
+            }
+        }) {
+            domain.get_records_diff_power_microwatts()
+        } else {
+            self.get_records_diff_power_microwatts()
+        }
+    }
+
 
     pub fn get_rapl_mmio_energy_microjoules(&self) -> Option<Record> {
         if let Some(mmio) = self.sensor_data.get("mmio") {
@@ -2495,6 +2611,10 @@ pub struct Domain {
     pub record_buffer: Vec<Record>,
     /// Maximum size of record_buffer, in kilobytes
     pub buffer_max_kbytes: u16,
+    /// Maximum value of the RAPL energy counter before it wraps, in microjoules.
+    pub rapl_max_uj: u64,
+    /// Background power allocated to this domain from the socket-level idle/activation tracker, in microwatts.
+    pub background_power_uw: f64,
     ///
     #[allow(dead_code)]
     sensor_data: HashMap<String, String>,
@@ -2570,6 +2690,11 @@ impl Domain {
             counter_uj_path,
             record_buffer: vec![],
             buffer_max_kbytes,
+            rapl_max_uj: sensor_data
+                .get("max_energy_range_uj")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(u64::MAX),
+            background_power_uw: 0.0,
             sensor_data,
         }
     }
@@ -2587,16 +2712,17 @@ impl Domain {
                 last_record.value.trim().parse::<u64>(),
                 previous_record.value.trim().parse::<u64>(),
             ) {
-                if previous_microjoules > last_microjoules {
-                    return None;
-                }
-                let microjoules = last_microjoules - previous_microjoules;
+                let microjoules = if last_microjoules >= previous_microjoules {
+                    last_microjoules - previous_microjoules
+                } else {
+                    self.rapl_max_uj.saturating_sub(previous_microjoules).saturating_add(last_microjoules)
+                };
                 let time_diff =
                     last_record.timestamp.as_secs_f64() - previous_record.timestamp.as_secs_f64();
                 let microwatts = microjoules as f64 / time_diff;
                 return Some(Record::new(
                     last_record.timestamp,
-                    (microwatts as u64).to_string(),
+                    (microwatts as u64).saturating_sub(self.background_power_uw as u64).to_string(),
                     units::Unit::MicroWatt,
                 ));
             }
@@ -2832,7 +2958,7 @@ mod tests {
         let sensor = msr_rapl::MsrRAPLSensor::new();
         let mut topo = (*sensor.get_topology()).unwrap();
         for s in topo.get_sockets() {
-            for c in s.get_cores() {
+            for c in s.get_cores_mut() {
                 println!("{:?}", c.read_stats());
             }
         }

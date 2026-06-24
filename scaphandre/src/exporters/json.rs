@@ -86,6 +86,7 @@ struct Domain {
     name: String,
     consumption: f32,
     timestamp: f64,
+    background: Option<f32>,
 }
 #[derive(Serialize, Deserialize)]
 struct Socket {
@@ -514,10 +515,17 @@ impl JsonExporter {
                                     .unwrap()
                                     == socket.id
                         })
-                        .map(|d| Domain {
-                            name: d.attributes.get("domain_name").unwrap().clone(),
-                            consumption: format!("{}", d.metric_value).parse::<f32>().unwrap(),
-                            timestamp: d.timestamp.as_secs_f64(),
+                        .map(|d| {
+                            let domain_name = d.attributes.get("domain_name").unwrap().clone();
+                            let bg = socket.domains.iter()
+                                .find(|rd| rd.name == domain_name)
+                                .map(|rd| rd.background_power_uw as f32);
+                            Domain {
+                                name: domain_name,
+                                consumption: format!("{}", d.metric_value).parse::<f32>().unwrap(),
+                                timestamp: d.timestamp.as_secs_f64(),
+                                background: bg,
+                            }
                         })
                         .collect::<Vec<_>>();
 
@@ -536,6 +544,7 @@ impl JsonExporter {
                                 .parse::<f32>()
                                 .unwrap(),
                             timestamp: idle_metric.timestamp.as_secs_f64(),
+                            background: None,
                         });
                     }
 

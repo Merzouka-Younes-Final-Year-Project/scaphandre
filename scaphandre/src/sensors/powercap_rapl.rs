@@ -13,6 +13,31 @@ use super::units::Unit;
 pub const DEFAULT_BUFFER_PER_SOCKET_MAX_KBYTES: u16 = 1;
 pub const DEFAULT_BUFFER_PER_DOMAIN_MAX_KBYTES: u16 = 1;
 
+pub enum DomainResource {
+    Memory,
+    CPU,
+    GPU,
+}
+
+impl DomainResource {
+    pub fn parse(name: &str) -> Self {
+        match name {
+            "core" => Self::CPU,
+            "uncore" => Self::GPU,
+            "dram" => Self::Memory,
+            _ => panic!("Unsupported resource: {name}")
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            Self::CPU => String::from("core"),
+            Self::GPU => String::from("uncore"),
+            Self::Memory => String::from("dram"),
+        }
+    }
+}
+
 /// This is a Sensor type that relies on powercap and rapl linux modules
 /// to collect energy consumption from CPU sockets and RAPL domains
 pub struct PowercapRAPLSensor {
@@ -195,7 +220,14 @@ impl Sensor for PowercapRAPLSensor {
                         self.base_path, socket_id, domain_id
                     ),
                 );
+                if let Ok(max) = fs::read_to_string(format!("{folder_name}/max_energy_range_uj")) {
+                    sensor_data_for_domain.insert(String::from("max_energy_range_uj"), max.trim().to_string());
+                }
                 if let Ok(domain_name) = &fs::read_to_string(format!("{folder_name}/name")) {
+                    sensor_data_for_domain.insert(
+                        String::from("related_resource"),
+                        DomainResource::parse(domain_name).to_string(),
+                    );
                     topo.safe_add_domain_to_socket(
                         socket_id,
                         domain_id,

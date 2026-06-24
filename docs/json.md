@@ -40,6 +40,55 @@ Each measurement cycle the JSON exporter writes a single JSON object to stdout o
 
 `consumption` is the total host power in microwatts at this timestamp. `activation` and `background` are optional breakdowns of that total.
 
+## `sockets` array and `domains`
+
+Each socket entry contains a `domains` array. Each domain entry describes one RAPL sub-domain (typically `core`, `uncore`, `dram`) plus a synthetic `idle` entry appended when idle data is available.
+
+```jsonc
+{
+  "id": 0,
+  "consumption": 10000000.0,
+  "timestamp": 1750000000.123,
+  "activation": 3000000.0,
+  "background": 1500000.0,
+  "domains": [
+    {
+      "name": "core",
+      "consumption": 7500000.0,
+      "timestamp": 1750000000.123,
+      "background": 1050000.0
+    },
+    {
+      "name": "dram",
+      "consumption": 1200000.0,
+      "timestamp": 1750000000.123,
+      "background": 168000.0
+    },
+    {
+      "name": "idle",
+      "consumption": 1500000.0,
+      "timestamp": 1750000000.123,
+      "background": null
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | RAPL domain name (`core`, `uncore`, `dram`) or `idle` |
+| `consumption` | float | Net power consumed by this domain in microwatts (background already subtracted) |
+| `timestamp` | float | Unix timestamp (seconds) of this measurement |
+| `background` | float \| null | Background power allocated to this domain in microwatts, proportional to its share of total socket domain power. `null` for the synthetic `idle` entry. |
+
+`background` for each domain is computed as:
+
+```
+background_domain_i = socket_background × (domain_power_i / Σ domain_power_j)
+```
+
+If all domain power readings are zero the socket background is split equally. This value is subtracted from the raw RAPL counter diff before reporting `consumption`, so `consumption` reflects only active (non-idle/non-activation) power for that domain.
+
 ## `cores` array
 
 Each element describes one logical CPU core for the current interval.
