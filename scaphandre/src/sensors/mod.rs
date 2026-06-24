@@ -666,6 +666,12 @@ impl CPUSocket {
                 let last_powers = last_powers?;
 
                 let abs_coef_total: f64 = coef_diffs.iter().map(|c| c.abs()).sum();
+                let net_coef_change: f64 = coef_diffs.iter().sum();
+                // The change in power delta doesn't correspond with observed CPU behavior, meaning
+                // reasoning about the system becomes unfeasible
+                if power_delta as f64 * net_coef_change < 0.0 {
+                    return self.core_power_buffer.last().cloned();
+                }
 
                 let result = if power_delta != 0 {
                     if abs_coef_total == 0.0 {
@@ -679,11 +685,24 @@ impl CPUSocket {
 
                 if let Some((core_power_changes, abs_power_delta_total)) = result {
                     self.coef_to_power = (self.coef_to_power + (abs_power_delta_total / abs_coef_total)) / 2.0;
-                    let new_values: Vec<String> = last_powers
+                    let new_values: Vec<f64> = last_powers
                         .iter()
                         .zip(core_power_changes.iter())
-                        .map(|(prev, delta)| (prev + delta).to_string())
+                        .map(|(prev, delta)| prev + delta)
                         .collect();
+                    let new_values: Vec<String> = if let Some(socket_cpu_power) = self.cpu_power_buffer
+                        .iter()
+                        .last()
+                        .as_ref().and_then(|r| r.value.parse::<u64>().ok()) {
+                        let new_sum: f64 = new_values.iter().sum();
+                        let residual: f64 = socket_cpu_power as f64 - new_sum;
+                        new_values
+                            .iter()
+                            .map(|v| (v + ((v / new_sum) * residual)).to_string())
+                            .collect()
+                    } else {
+                        new_values.iter().map(|v| v.to_string()).collect()
+                    };
                     debug!("CORE New values (power_delta={power_delta}): {}", new_values.join(", "));
                     let units = vec![units::Unit::MicroWatt; new_values.len()];
                     return Some(MultiValuedRecord::new(current_system_time_since_epoch(), new_values, units));
