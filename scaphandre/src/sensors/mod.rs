@@ -1468,12 +1468,31 @@ impl Topology {
         cores
     }
 
+
+    /// Returns the current core powers using the proportional method across all sockets
+    pub fn get_proportional_core_diff_power_microwatts(&self) -> Option<MultiValuedRecord> {
+        let mut v: Vec<(u16, String)> = vec![];
+        for s in &self.sockets {
+            let core_ids: Vec<u16> = s.get_cores().iter().map(|c| c.id).collect();
+            let powers = s.get_proportional_core_diff_power_microwatts()?.values;
+            let mut tmp: Vec<(u16, String)> = core_ids.into_iter().zip(powers).collect();
+            v.append(&mut tmp);
+        }
+        v.sort_by_key(|(id, _)| *id);
+        Some(MultiValuedRecord::new(
+            current_system_time_since_epoch(),
+            v.iter().map(|t| t.1.clone()).collect(),
+            v.iter().map(|_| units::Unit::MicroWatt).collect(),
+        ))
+    }
+
+    /// Returns the current core powers across all sockets
     pub fn get_core_powers_microwatts(&self) -> Option<MultiValuedRecord> {
         let mut v: Vec<(u16, String)> = vec![];
         for s in &self.sockets {
             let core_ids: Vec<u16> = s.get_cores().iter().map(|c| c.id).collect();
             let powers = s.get_core_powers_microwatts()?.values;
-            let mut tmp: Vec<(u16, String)> = core_ids.into_iter().zip(powers.into_iter()).collect();
+            let mut tmp: Vec<(u16, String)> = core_ids.into_iter().zip(powers).collect();
             v.append(&mut tmp);
         }
         v.sort_by_key(|(id, _)| *id);
@@ -1660,7 +1679,7 @@ impl Topology {
                 );
             }
             if let Some(core_percentages) = core_percentages {
-                let result = self.get_core_powers_microwatts().map(|r| {
+                let result = self.get_proportional_core_diff_power_microwatts().map(|r| {
                     r.values
                         .iter()
                         .enumerate()
