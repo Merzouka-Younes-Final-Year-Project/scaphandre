@@ -2,6 +2,10 @@
 
 Each measurement cycle the JSON exporter writes a single JSON object to stdout or a file. This document describes the top-level structure and every field, with particular attention to the per-core fields added in the current version.
 
+> **⚠ Buffering caveat:** The exporter wraps its output in a `BufWriter` (8 KB default buffer) and never calls `.flush()`. The `-s` interval controls only how often data is **written to the buffer**, not when it reaches the underlying file or stdout. For small JSON payloads the actual output may be delayed for many iterations until the buffer fills or the process exits. **Do not rely on `-s` for real-time/timely delivery.**
+>
+> **`--timeout`:** When using `--timeout <SECONDS>`, the loop terminates naturally after that many seconds, `run()` returns, and `BufWriter`'s `Drop` flushes all remaining data to the output. This is the **only way to avoid data loss at shutdown without code changes**. Without `--timeout`, a signal (Ctrl+C, SIGTERM, SIGKILL) kills the process immediately — `Drop` does not run and any buffered data is silently lost.
+
 ## Top-level object
 
 ```jsonc
