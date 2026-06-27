@@ -100,7 +100,7 @@ fn try_sched_switch(ctx: TracePointContext) -> Result<u32, u32> {
             let _ = PID_LAST.remove(prev_tgid);
             if let Some(c_time) = CPU_TIME.get_ptr_mut(cpu) {
                 if cpu == 2 {
-                    info!(&ctx, "ADDING delta={} to CPU TIME", delta);
+                    info!(&ctx, "ADDING delta={} to CPU TIME CORE {}", delta, cpu);
                 }
                 unsafe { *c_time += delta };
             }
