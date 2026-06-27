@@ -86,7 +86,7 @@ fn try_sched_switch(ctx: TracePointContext) -> Result<u32, u32> {
 
     // Accumulate time for the task that just got switched OFF the CPU
     // Skip the idle task (PID 0) so CPU_TIME only reflects non-idle runtime.
-    if prev_tgid != 0 {
+    if prev_tgid != 0 && prev_tid != 0 {
         if let Some(last_timestamp) = PID_LAST.get_ptr(prev_tgid) {
             let delta = now - unsafe { *last_timestamp };
             if let Some(p_time) = PID_TIMES.get_ptr_mut(prev_tgid) {
@@ -113,9 +113,10 @@ fn try_sched_switch(ctx: TracePointContext) -> Result<u32, u32> {
 pub fn sample_tick(_ctx: PerfEventContext) -> u32 {
     let now = unsafe { bpf_ktime_get_ns() };
     let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
+    let tid = (bpf_get_current_pid_tgid() & 0xFFFFFFFF) as u32;
     let cpu = unsafe { bpf_get_smp_processor_id() };
 
-    if pid == 0 {
+    if pid == 0 || tid == 0 {
         return 0;
     }
 
