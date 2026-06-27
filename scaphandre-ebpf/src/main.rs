@@ -6,6 +6,7 @@ use aya_ebpf::{
     maps::{Array, PerCpuHashMap, RingBuf},
     programs::{PerfEventContext, TracePointContext}
 };
+use aya_log_ebpf::info;
 use scaphandre_common::{CpuEventType, CpuStateEvent};
 
 // TODO: Ask LLM about fixes from this side and simplify if possible
@@ -84,16 +85,25 @@ fn try_sched_switch(ctx: TracePointContext) -> Result<u32, u32> {
     let _ = TID_TO_TGID.insert(args.next_pid as u32, next_tgid, 0);
 
     // Accumulate time for the task that just got switched OFF the CPU
-    if let Some(last_timestamp) = PID_LAST.get_ptr(prev_tgid) {
-        let delta = now - unsafe { *last_timestamp };
-        if let Some(p_time) = PID_TIMES.get_ptr_mut(prev_tgid) {
-            unsafe { *p_time += delta };
-        } else {
-            let _ = PID_TIMES.insert(prev_tgid, delta, 0);
-        };
-        let _ = PID_LAST.remove(prev_tgid);
-        if let Some(c_time) = CPU_TIME.get_ptr_mut(cpu) {
-            unsafe { *c_time += delta };
+    // Skip the idle task (PID 0) so CPU_TIME only reflects non-idle runtime.
+    if prev_tgid != 0 {
+        if let Some(last_timestamp) = PID_LAST.get_ptr(prev_tgid) {
+            let delta = now - unsafe { *last_timestamp };
+            if let Some(p_time) = PID_TIMES.get_ptr_mut(prev_tgid) {
+                unsafe { *p_time += delta };
+            } else {
+                let _ = PID_TIMES.insert(prev_tgid, delta, 0);
+            };
+            if cpu == 2 {
+                info!(&ctx, "ADDING delta {} to PID {}", delta, prev_tgid);
+            }
+            let _ = PID_LAST.remove(prev_tgid);
+            if let Some(c_time) = CPU_TIME.get_ptr_mut(cpu) {
+                if cpu == 2 {
+                    info!(&ctx, "ADDING delta={} to CPU TIME", delta);
+                }
+                unsafe { *c_time += delta };
+            }
         }
     }
 
@@ -108,6 +118,10 @@ pub fn sample_tick(_ctx: PerfEventContext) -> u32 {
     let now = unsafe { bpf_ktime_get_ns() };
     let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
     let cpu = unsafe { bpf_get_smp_processor_id() };
+
+    if pid == 0 {
+        return 0;
+    }
 
     if let Some(p) = PID_LAST.get_ptr_mut(pid) {
         let delta = now - unsafe { *p };
