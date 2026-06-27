@@ -2085,7 +2085,7 @@ impl CPUSocket {
             .iter()
             .map(|d| d.get_records_diff_power_microwatts().and_then(|r| r.value.parse::<f64>().ok()).unwrap_or(0.0))
             .collect();
-        let total: f64 = domain_powers.iter().sum();
+        let total: f64 = self.get_records_diff_power_microwatts().and_then(|r| r.value.parse::<f64>().ok()).unwrap_or(0.0);
         let n = self.domains.len() as f64;
         for (d, &power) in self.domains.iter_mut().zip(domain_powers.iter()) {
             d.background_power_uw = if total > 0.0 {
