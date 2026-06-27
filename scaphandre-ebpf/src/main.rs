@@ -94,14 +94,10 @@ fn try_sched_switch(ctx: TracePointContext) -> Result<u32, u32> {
             } else {
                 let _ = PID_TIMES.insert(prev_tgid, delta, 0);
             };
-            if cpu == 2 {
-                info!(&ctx, "ADDING delta {} to PID {}", delta, prev_tgid);
-            }
+            info!(&ctx, "ADDING delta {} to PID {}", delta, prev_tgid);
             let _ = PID_LAST.remove(prev_tgid);
             if let Some(c_time) = CPU_TIME.get_ptr_mut(cpu) {
-                if cpu == 2 {
-                    info!(&ctx, "ADDING delta={} to CPU TIME CORE {}", delta, cpu);
-                }
+                info!(&ctx, "ADDING delta={} to CPU TIME CORE {}", delta, cpu);
                 unsafe { *c_time += delta };
             }
         }
