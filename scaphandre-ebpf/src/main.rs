@@ -33,6 +33,19 @@ struct SchedSwitchArgs {
     next_prio:       i32,
 }
 
+/// Layout from /sys/kernel/debug/tracing/events/sched/sched_process_exit/format
+#[repr(C)]
+struct SchedProcessExitArgs {
+    common_type:     u16,
+    common_flags:    u8,
+    common_preempt:  u8,
+    common_pid:      i32,
+    comm:            [u8; 16],
+    pid:             i32,
+    prio:            i32,
+    group_dead:      i32,
+}
+
 #[map]
 static PID_TIMES: PerCpuHashMap<u32, u64> = PerCpuHashMap::with_max_entries(MAX_KEYS, 0);
 
@@ -139,8 +152,6 @@ pub fn sample_tick(_ctx: PerfEventContext) -> u32 {
 }
 
 /// Fires every 10 ms.
-// AI: Fix this to execute only on one core per socket. This should be done in userspace by
-// retrieving sockets and hooking into the first core
 #[perf_event]
 pub fn cpu_state_tick(_ctx: PerfEventContext) -> u32 {
     let mut socket_active_cpus: [u32; MAX_SOCKET as usize] = [u32::MAX; MAX_SOCKET as usize];
@@ -203,6 +214,49 @@ pub fn cpu_state_tick(_ctx: PerfEventContext) -> u32 {
     }
 
     0
+}
+
+#[tracepoint]
+pub fn scaphandre_process_exit(ctx: TracePointContext) -> u32 {
+    match try_process_exit(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_process_exit(ctx: TracePointContext) -> Result<u32, u32> {
+    let now = unsafe { bpf_ktime_get_ns() };
+    let cpu = unsafe { bpf_get_smp_processor_id() };
+    let tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
+
+    let args = unsafe {
+        ctx.read_at::<SchedProcessExitArgs>(0).map_err(|_| 1u32)?
+    };
+    let tid = args.pid as u32;
+
+    if tgid != 0 && tid != 0 {
+        if let Some(last) = PID_LAST.get_ptr(tgid) {
+            let delta = now - unsafe { *last };
+            if let Some(p_time) = PID_TIMES.get_ptr_mut(tgid) {
+                unsafe { *p_time += delta };
+            } else {
+                let _ = PID_TIMES.insert(tgid, delta, 0);
+            };
+            if let Some(c_time) = CPU_TIME.get_ptr_mut(cpu) {
+                unsafe { *c_time += delta };
+            }
+            let _ = PID_LAST.remove(tgid);
+        }
+    }
+
+    let _ = TID_TO_TGID.remove(tid);
+
+    if args.group_dead != 0 {
+        let _ = PID_TIMES.remove(tgid);
+        let _ = PID_LAST.remove(tgid);
+    }
+
+    Ok(0)
 }
 
 #[cfg(not(test))]

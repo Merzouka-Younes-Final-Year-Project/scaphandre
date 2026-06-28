@@ -34,6 +34,12 @@ pub fn load() -> anyhow::Result<aya::Ebpf> {
     program.load()?;
     program.attach("sched", "sched_switch")?;
 
+    let proc_exit: &mut TracePoint =
+        ebpf.program_mut("scaphandre_process_exit").unwrap().try_into()?;
+    proc_exit.load()?;
+    proc_exit.attach("sched", "sched_process_exit")?;
+    debug!("Loaded scaphandre_process_exit eBPF program.");
+
     let tick: &mut PerfEvent = ebpf.program_mut("sample_tick").unwrap().try_into()?;
     tick.load()?;
     for cpu in online_cpus().map_err(|(_, e)| e)? {
