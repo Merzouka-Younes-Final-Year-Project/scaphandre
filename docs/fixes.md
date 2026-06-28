@@ -52,14 +52,3 @@ Background power is derived from CPU idle/active state events emitted by the `cp
 
 The userspace loader was changed to attach `cpu_state_tick` only to the first physical CPU of each socket (by reading `/sys/devices/system/cpu/cpuN/topology/physical_package_id`). This ensures one idle/active measurement per socket, consistent with how RAPL reports socket-level power.
 
----
-
-## CPU-domain scoping of power tracking (`feat(core): Scoped attribution to CPU only`)
-
-**Tag context:** `v_propo_preserving_delta_of_delta`
-
-Previously the delta-of-delta algorithm used the total host RAPL power (entire package) as the signal it was trying to attribute to cores. This introduced noise from DRAM, uncore, and other non-CPU components whose power changes have nothing to do with per-core computation.
-
-All per-core attribution now uses the CPU RAPL sub-domain power only. The `get_records_diff_power_microwatts_per_domain` helper selects the CPU domain record if available, falling back to the full package reading only when no domain-specific record exists.
-
-The per-core state (`core_coef_buffer`, `core_power_buffer`, `cpu_power_buffer`, `coef_to_power`) was also moved from `Topology` down to `CPUSocket`, where it logically belongs. Each socket maintains its own independent attribution state.
