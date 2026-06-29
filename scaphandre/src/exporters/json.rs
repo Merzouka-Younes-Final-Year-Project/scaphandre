@@ -615,7 +615,7 @@ impl JsonExporter {
                 let cores = self
                     .metric_generator
                     .topology
-                    .get_core_powers_microwatts()
+                    .get_proportional_core_diff_power_microwatts()
                     .map(|r| {
                         let coef_diffs = self.metric_generator.topology.get_core_coefficient_diffs()
                             .unwrap_or_default();
