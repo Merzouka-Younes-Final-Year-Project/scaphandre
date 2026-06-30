@@ -1,5 +1,0 @@
-- Fixed the RAPL wrap around issue mentioned by the RAPL in action paper.
-- Scoped the attribution to processes to only rely on CPU power for the moment as per the set target
-- Added Idle and Activation power measurement at the host, socket, domain level
-- Integrated eBPF for per-core process CPU time measurement and for activation/idle power calculation
-- Added support for per-core power calculation
