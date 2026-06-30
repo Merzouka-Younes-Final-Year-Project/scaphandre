@@ -20,10 +20,11 @@ get information to use for power measurement from.
 The tool achieves this decoupling through pre-defined interfaces which those wishing to modify the 
 tool should adhere to and implement.
 
-{MENTION SENSOR INTERFACES WITH A BRIEF EXPLANATION}
-{MENTION EXPORTER INTERFACES WITH A BRIEF EXPLANATION}
+On the sensor side, the `Sensor` trait requires two methods: `get_topology()` to retrieve the current topology and `generate_topology()` to discover and build it from hardware sources. Additionally, the `RecordGenerator` trait (implemented by `Topology`, `CPUSocket`, and `Domain`) provides `refresh_record()`, `get_records_passive()`, and `clean_old_records()` for periodic energy counter updates, while `RecordReader` — also implemented per-component — offers `read_record()` for direct counter reads.
 
-The exporters are responsible for polling the sensors for new information using Topology::refresh. {CORRECT ME IF I AM WRONG, EXPLAIN HOW DOES UPDATING RESULTS WORK}
+On the exporter side, the `Exporter` trait requires `run()` — the main loop that drives the measurement cycle — and `kind()` which returns the exporter's identifier string (e.g. "stdout", "prometheus"). A `MetricGenerator` wrapper struct holds a `Topology` instance and provides `gen_all_metrics()` to transform raw topology and process data into `Metric` structs, and `pop_metrics()` to drain them for output.
+
+The exporters are responsible for polling the sensors for new information. The update cycle works as follows: in each iteration, the exporter calls `topology.refresh()`, which drains eBPF ring buffer events, reads RAPL energy counters from sysfs (or MSR), polls `/proc/stat` for per-core stats, refreshes process tracking data, and reads the eBPF CPU_TIME map for per-CPU busy time. The exporter then calls `metric_generator.gen_all_metrics()` to convert the refreshed state into `Metric` structs, and finally `pop_metrics()` to drain them for emission through the exporter's output channel.
 
 However regardless of the sensor from which the tool gathers its metrics or the exporter used, the 
 tool uses a unified method for power attribution.
@@ -48,9 +49,16 @@ idle period.
 
 
 # Scaphandre power attribution pipeline
-{EXPLAIN HOW DOES DATA/INPUTS FLOW THROUGH SENSOR, POWER ATTRIBUTION MODULE AND EXPORTER AND WHERE 
-THE VARIOUS INTERFACES SIT, JUST AT A HIGH LEVEL, MAKE SURE TO ADD A DIAGRAM WITH MEMRAID OR SOMETHING 
-JUST SOMETHING I CAN EXPORT AS PNG LATER}
+
+The data flow proceeds through three layers connected by the trait interfaces:
+
+1. **Sensor layer**: The sensor (e.g. `PowercapRAPLSensor`) implements the `Sensor` trait and builds a `Topology` containing `CPUSocket`, `Domain`, and `CPUCore` objects via `generate_topology()`. Each component implements `RecordReader` to read hardware energy counters from RAPL sysfs.
+
+2. **Power attribution layer**: `Topology::refresh()` orchestrates all updates: it drains eBPF events for idle/activation detection, reads RAPL energy counters via the `RecordReader` implementations, reads `/proc/stat` and perf counters for core activity metrics, and computes per-core and per-process power using the attribution formula. The `RecordGenerator` trait on `Topology`, `CPUSocket`, and `Domain` provides the standardised `refresh_record()` interface for periodic counter updates.
+
+3. **Exporter layer**: An exporter implements the `Exporter` trait and wraps a `MetricGenerator` holding the `Topology`. In its `run()` loop, it calls `topology.refresh()` to advance the measurement cycle, then `gen_all_metrics()` to create `Metric` objects, and `pop_metrics()` to drain them for output.
+
+A diagram of this pipeline is provided in the final architecture document.
 
 
 # Architecture
@@ -62,11 +70,11 @@ finer-grained attribution, The power attribution part which is the core that map
 to individual process works, the core entity that manages this process is Topology, this is wrapped 
 and controlled by a MetricGenerator which continuously polls it for updates.
 
-{GENERATE AN ILLUSTRATION USING MERMAID OR ANY TOOL THAT WOULD HAVE GOOD COMPREHENSIBLE VISUALS 
-IF YOU NEED MCP LET ME KNOW I WOULD LOVE INPUTS ON ILLUSTRATION}
+A Mermaid diagram illustrating this four-part architecture is provided in the final architecture document.
 
 ## Sensor
-{EXPLAIN WHAT DOES THE SENSOR DO}
+
+The sensor is responsible for discovering the hardware topology and providing access to energy measurement counters. It scans system interfaces — primarily the `powercap` sysfs hierarchy at `/sys/class/powercap/` and performance counters via `perf_event_open` — to enumerate CPU sockets, their RAPL domains (core, package, DRAM, PSYS), and the logical cores belonging to each socket. The resulting `Topology` structure serves as the central representation of the system that both the power attribution logic and exporters operate on. The `PowercapRAPLSensor` is the primary implementation on Linux and is responsible for detecting the `intel_rapl` kernel module, discovering domain folders, and optionally supporting MMIO-based RAPL access on newer platforms.
 
 ## Power attribution
 The current power attribution model aims to address SMT, DVFS, and contention while also keeping a 
@@ -158,7 +166,19 @@ that Process power is roughly equal to Core power, thus we are effectively measu
 directly and validating the final-like attribution method that would attribute power to processes 
 using the same methodology but at a higher level (core rather than process).
 
-{IMPROVE ON THIS WITH WHAT YOU HAVE ACCESS THROUGH CODE}
+In the codebase, the attribution is implemented as follows. `CPUSocket::get_core_coefs()` computes a per-core coefficient using the formula:
+
+```
+coefficient_i = (1 + IPC_i) * APERF_i * (APERF_i / MPERF_i)
+```
+
+The coefficients are then normalised into proportions by `get_core_proportions()` so they sum to 1.0 across all cores on the socket. `get_proportional_core_diff_power_microwatts()` distributes the socket's active power to each core proportionally:
+
+```
+core_power_i = proportion_i * socket_active_power
+```
+
+For process-level attribution, the eBPF `PID_TIMES` map provides per-process per-CPU busy time. `Topology::get_process_core_time_data(pid)` reads these values together with total per-CPU busy time from the `CPU_TIME` map, and computes `proportion_i = process_time_i / total_time_i` for each logical CPU. The process power for a core is then `core_power_i * proportion_i`, and total process power is the sum across all cores. When eBPF data is unavailable, the system falls back to OS-reported CPU time percentages from `/proc/stat`.
 
 ## eBPF
 Linux doesn't record the per-CPU time but rather records general CPU time.
@@ -170,7 +190,15 @@ events and another attached to a timer that ticks every 10ms. The first aims to 
 at the context switch level. The second is for tracking long running processes that don't switch 
 very often.
 
-{ADD DETAILS ABOUT THE MAPS AND HOW THEY ARE USED}
+The eBPF subsystem uses seven maps:
+
+- **`PID_TIMES`** (PerCpuHashMap<u32, u64>) — accumulates busy time in nanoseconds per process (TGID), per logical CPU. Keyed by TGID, value accumulates delta each time a process is switched on or off a CPU.
+- **`PID_LAST`** (PerCpuHashMap<u32, u64>) — stores the last timestamp when a process was switched onto a CPU, used to compute elapsed time on context switch.
+- **`TID_TO_TGID`** (HashMap<u32, u32>) — maps thread IDs (TID) to their process group ID (TGID), seeded on every context switch to allow per-process aggregation.
+- **`CPU_TIME`** (Array<u64>) — per-logical-CPU accumulator of non-idle busy time in nanoseconds, updated by both the sched_switch and timer programs.
+- **`CPU_SNAPSHOT`** (Array<u64>) — snapshot of `CPU_TIME` taken by `cpu_state_tick` to compute per-CPU deltas for idle/activation detection.
+- **`CPU_STATE_EVENTS`** (RingBuf) — ring buffer that carries `CpuStateEvent` structs (socket_id + event_type) from kernel to userspace when a socket is detected fully idle or with exactly one active core.
+- **`CPU_TO_SOCKET`** (Array<u16>) — maps each logical CPU index to its physical socket ID (plus one offset, so zero signals end of available CPUs). Populated by userspace at startup from `/sys/devices/system/cpu/*/topology/physical_package_id`.
 
 We also specifically handle one failure mode. Since eBPF maps are naturally limited in size we specifically 
 handle the case where the system is in high load and a large number of processes get created while 
@@ -195,7 +223,7 @@ core was idle, if all cores were idle then the whole socket was idle and an idle
 is emitted to a RING BUFFER, if only one was active then an activation event is emitted to the ring 
 buffer.
 
-{CLARIFY THAT THIS SETUP IS PER SOCKET AND HOW THE PER SOCKET HANDLING WORKS}
+The idle/activation detection is organised per socket. The `CPU_TO_SOCKET` eBPF array maps each logical CPU to its physical socket, populated at startup by reading `physical_package_id` from sysfs. The `cpu_state_tick` program is attached to only one CPU per socket (the first logical CPU of each package). When it fires, it iterates all CPUs, uses `CPU_TO_SOCKET` to group them by socket, and counts how many CPUs in each socket had non-zero `CPU_TIME` delta since the last snapshot. If a socket has zero active CPUs an `IdleEvent` is pushed to the ring buffer for that socket; if exactly one CPU is active an `ActivationEvent` is pushed. On the userspace side, `Topology::refresh()` drains the ring buffer, groups events by socket ID, and passes them to each `CPUSocket`'s `refresh_activation_idle_records()` method which records the current host power as either an idle or activation power measurement.
 
 To track activation/idle power a tick based handlers is attached to the first core in a socket, 
 since idle/activation is relevant to a given socket, the program gets executed each 2ms.
@@ -215,10 +243,11 @@ Because activation also includes idle power the maximum between the two values i
 power to subtract from the power reading since activation should converge to a higher or equal value 
 to idle.
 
-{ADD A DIGRAM OF THE ENTIRE eBPF SIDE WITH PROGRAMS AND MAPS}
+A diagram of the eBPF programs and maps with their interactions is provided in the final architecture document.
 
 ## Exporter
-{EXPLAIN HOW THE EXPORTER USES THE METRICGENERATOR TO POLL NEW METRICS AT A HIGH LEVEL}
+
+Each exporter holds a `MetricGenerator` that wraps the shared `Topology`. In its `run()` loop, the exporter calls `topology.refresh()` to advance one measurement cycle — reading RAPL energy counters, draining eBPF events, refreshing process data, and computing power attribution. It then calls `metric_generator.gen_all_metrics()` which internally calls the various metric generation methods (`gen_self_metrics`, `gen_host_metrics`, `gen_socket_metrics`, `gen_system_metrics`, `gen_process_metrics`) to transform the refreshed `Topology` state into a flat vector of `Metric` structs. Finally, `pop_metrics()` drains these metrics, and the exporter serialises them to its output format (JSON, Prometheus, stdout, etc.). The cycle repeats on a configurable interval, typically every 1–2 seconds.
 
 # Future Perspectives
 - The current model uses per-CPU time to attribute CPU power to processes proportionally, we aim 

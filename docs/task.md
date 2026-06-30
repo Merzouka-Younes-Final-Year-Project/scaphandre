@@ -35,3 +35,6 @@ an MCP server? Do you want to give me a prompt I can plug into something like er
 document, without changing the core of the current information
 3. I want you to tidy up the current overview, generating an architecture document with the full: 
 explanation + visuals.
+
+# Resources
+You can find my current thesis in ./main.txt

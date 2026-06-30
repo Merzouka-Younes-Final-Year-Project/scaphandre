@@ -34,3 +34,4 @@ packaging/*/BUILDROOT/*
 
 tmp
 docs/main*
+**/thesis
