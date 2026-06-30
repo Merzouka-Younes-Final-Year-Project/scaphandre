@@ -33,3 +33,4 @@ packaging/*/BUILDROOT/*
 .data.json
 
 tmp
+docs/main*
