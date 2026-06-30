@@ -155,27 +155,23 @@ Each element describes one logical CPU core for the current interval.
   "consumption": 450000.0,
   "timestamp": 1750000000.123,
   "coefficient": 0.312,
-  "proportion": 0.085,
-  "coefficient_diff": 0.014,
-  "power_change_microwatts": 12000.0,
-  "coefficient_diff_proportion": 0.072,
-  "power_change_proportion": 0.068
+  "proportion": 0.085
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | int | Zero-based logical core index |
-| `consumption` | float | Estimated current power consumed by this core, in microwatts |
+| `consumption` | float | Estimated current power consumed by this core, in microwatts (see below) |
 | `timestamp` | float | Unix timestamp (seconds) of this measurement |
 | `coefficient` | float | The core's activity coefficient for this interval (see below) |
 | `proportion` | float | This core's share of the total coefficient sum, in [0, 1] |
-| `coefficient_diff` | float | Signed change in this core's coefficient since the previous interval |
-| `power_change_microwatts` | float | Attributed signed change in this core's power since the previous interval, in microwatts |
-| `coefficient_diff_proportion` | float | This core's share of total absolute coefficient change, in [0, 1] (see below) |
-| `power_change_proportion` | float | This core's share of total absolute power change, in [0, 1] (see below) |
 
-### `coefficient`
+### Minimal
+
+This is the current output format, using proportional power attribution. Each core's power is computed from its share of the measured CPU domain power.
+
+**`coefficient`**
 
 The coefficient captures how hard a core is working relative to its theoretical maximum. It is computed from hardware performance counters (APERF, MPERF, IPC):
 
@@ -185,17 +181,33 @@ coefficient = (1 + IPC) × APERF × (APERF / MPERF)
 
 A higher coefficient means the core was both running at a higher fraction of its maximum frequency *and* executing instructions more efficiently. See [`docs/approach.md`](approach.md) for the full derivation.
 
-### `proportion`
+**`proportion`**
 
-`proportion = coefficient_i / sum(coefficient_j for all j)`
+```
+proportion = coefficient_i / sum(coefficient_j for all j)
+```
 
-This is the fraction of total core activity attributed to core `i`. It is used to split the host power reading proportionally when no better information is available.
+This is the fraction of total core activity attributed to core `i`. It is used to split the CPU domain power reading among cores.
 
-### `coefficient_diff`
+**`consumption`**
+
+```
+consumption = proportion_i × cpu_domain_power
+```
+
+where `cpu_domain_power` is the measured power of the `core` RAPL domain in microwatts, with background power already subtracted. If no dedicated CPU domain is found, the socket-level power (minus background) is used instead.
+
+This is a pure proportional allocation — there is no cumulative state across intervals and no delta-of-delta tracking. Each measurement stands alone.
+
+### Legacy
+
+In earlier versions the `cores` array included additional per-core tracking fields based on a delta-of-delta attribution algorithm. These are no longer emitted but the descriptions are preserved here for reference.
+
+**`coefficient_diff`**
 
 The signed change in `coefficient` from the previous interval to the current one. A positive value means the core became more active; negative means it became less active. This is the input to the power attribution algorithm.
 
-### `power_change_microwatts`
+**`power_change_microwatts`**
 
 The estimated change in this core's power consumption since the previous interval, in microwatts. It is computed as:
 
@@ -219,7 +231,7 @@ rescaled_i = consumption_i + (consumption_i / sum_j(consumption_j)) × residual
 
 where `residual = socket_cpu_power − sum_j(consumption_j)`. As a result, individual core `consumption` values may be negative if a core's estimated power drops below zero during this adjustment. `power_change_microwatts` is the interval delta before rescaling.
 
-### `coefficient_diff_proportion`
+**`coefficient_diff_proportion`**
 
 This core's share of the total *absolute* coefficient change across all cores:
 
@@ -229,7 +241,7 @@ coefficient_diff_proportion_i = |coefficient_diff_i| / sum(|coefficient_diff_j|)
 
 Unlike `proportion` (which is based on the raw coefficient), this field tells you how much of the *activity shift* this interval belongs to this core, regardless of sign. All values sum to 1.0. A core with a large `coefficient_diff_proportion` drove most of the workload change in this interval.
 
-### `power_change_proportion`
+**`power_change_proportion`**
 
 This core's share of the total *absolute* attributed power change:
 
