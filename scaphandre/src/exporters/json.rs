@@ -170,10 +170,6 @@ struct Core {
     timestamp: f64,
     coefficient: f64,
     proportion: f64,
-    coefficient_diff: f64,
-    power_change_microwatts: f64,
-    coefficient_diff_proportion: f64,
-    power_change_proportion: f64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -617,14 +613,6 @@ impl JsonExporter {
                     .topology
                     .get_proportional_core_diff_power_microwatts()
                     .map(|r| {
-                        let coef_diffs = self.metric_generator.topology.get_core_coefficient_diffs()
-                            .unwrap_or_default();
-                        let power_changes = self.metric_generator.topology.get_core_power_changes_microwatts()
-                            .unwrap_or_default();
-                        let coef_diff_proportions = self.metric_generator.topology.get_core_coefficient_diff_proportions()
-                            .unwrap_or_default();
-                        let power_change_proportions = self.metric_generator.topology.get_core_power_change_proportions()
-                            .unwrap_or_default();
                         r.values
                             .iter()
                             .enumerate()
@@ -635,10 +623,6 @@ impl JsonExporter {
                                     timestamp: r.timestamp.as_secs_f64(),
                                     coefficient: core_coefs.get(id).copied().unwrap_or(0.0),
                                     proportion: core_proportions.get(id).copied().unwrap_or(0.0),
-                                    coefficient_diff: coef_diffs.get(id).copied().unwrap_or(0.0),
-                                    power_change_microwatts: power_changes.get(id).copied().unwrap_or(0.0),
-                                    coefficient_diff_proportion: coef_diff_proportions.get(id).copied().unwrap_or(0.0),
-                                    power_change_proportion: power_change_proportions.get(id).copied().unwrap_or(0.0),
                                 })
                             })
                             .collect::<Vec<_>>()
