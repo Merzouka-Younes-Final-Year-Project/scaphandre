@@ -110,8 +110,8 @@ thus being a better mediator of the actual performance the core is at.
 APERF / MPERF is a standard ratio/metric and is recommended by Intel, it mediates how fast the core 
 is running, meaning that a high value for the ratio implies the core is running faster.
 
-IPC is the Instructions Per Cycle and is calculated using UCC (Unhalted Core Cycles) / INST (Retired Instructions) 
-this value mediates how much effective work the core is doing in terms of instructions being retired. 
+IPC (Instructions Per Cycle) is calculated as INST_RETIRED / UCC (Unhalted Core Cycles). 
+This value mediates how much effective work the core is doing in terms of instructions being retired per cycle. 
 The interesting case about this is that it naturally helps differentiate work being done when a 
 parallel CPU is running, since this gets lower compared to running in isolation, this is because 
 how HyperThreading works is that it shares execution units between two threads which means that 
