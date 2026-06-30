@@ -36,3 +36,5 @@ tmp
 docs/main*
 **/thesis
 fix.md
+**/venv
+**/__pycache__
