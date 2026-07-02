@@ -1944,7 +1944,17 @@ impl CPUSocket {
 
     /// Returns the desired domain's power diff if available, else Package power diff
     pub fn get_records_diff_power_microwatts_per_domain(&self, name: &str) -> Option<Record> {
-        self.get_records_diff_power_microwatts()
+        if let Some(domain) = self.domains.iter().find(|d| {
+            if let Some(resource) = d.sensor_data.get("related_resource") {
+                resource == name
+            } else {
+                false
+            }
+        }) {
+            domain.get_records_diff_power_microwatts()
+        } else {
+            self.get_records_diff_power_microwatts()
+        }
     }
 
 
