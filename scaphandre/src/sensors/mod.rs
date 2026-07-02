@@ -468,9 +468,9 @@ impl CPUSocket {
             .iter()
             .map(|c| {
                 if let Some(metrics) = c.get_core_metrics_delta() {
-                    debug!("CORE: {}, IPC: {}, APERF: {}, MPERF: {}", c.id, metrics.ipc, metrics.aperf, metrics.mperf);
-                    if metrics.mperf > 0 {
-                        (1_f64 + metrics.ipc) * (metrics.aperf as f64 * (metrics.aperf as f64 / metrics.mperf as f64))
+                    debug!("CORE: {}, IPC: {}, APERF: {}, MPERF: {}, TSC: {}", c.id, metrics.ipc, metrics.aperf, metrics.mperf, metrics.tsc);
+                    if metrics.tsc > 0 {
+                        (1_f64 + metrics.ipc) * (metrics.aperf as f64 / metrics.tsc as f64)
                     } else {
                         0.0
                     }
@@ -2095,9 +2095,10 @@ impl MultiValuedRecordReader for CPUCore {
                 }
             }
 
-            // Read APERF and MPERF from /dev/cpu/<id>/msr
+            // Read APERF, MPERF and TSC from /dev/cpu/<id>/msr
             const MSR_IA32_MPERF: u64 = 0xE7;
             const MSR_IA32_APERF: u64 = 0xE8;
+            const MSR_IA32_TSC: u64 = 0x10;
 
             let read_msr = |msr: u64| -> Option<u64> {
                 let file = fs::File::open(format!("/dev/cpu/{}/msr", self.id)).ok()?;
@@ -2108,6 +2109,7 @@ impl MultiValuedRecordReader for CPUCore {
 
             let mperf = read_msr(MSR_IA32_MPERF).unwrap_or(0);
             let aperf = read_msr(MSR_IA32_APERF).unwrap_or(0);
+            let tsc = read_msr(MSR_IA32_TSC).unwrap_or(0);
 
             // Logic to retrieve core cpu time
             let (core_busy, core_total, node_busy, node_total) =
@@ -2155,6 +2157,7 @@ impl MultiValuedRecordReader for CPUCore {
                     node_total.to_string(),
                     instr_scaled.to_string(),
                     cyc_scaled.to_string(),
+                    tsc.to_string(),
                 ],
                 vec![
                     units::Unit::MicroSeconds,
@@ -2166,6 +2169,7 @@ impl MultiValuedRecordReader for CPUCore {
                     units::Unit::Numeric,
                     units::Unit::Numeric,
                     units::Unit::Numeric,
+                    units::Unit::Cycles,
                 ],
             ))
         }
@@ -2231,19 +2235,23 @@ impl CPUCore {
                 cpu_time_percentage: 0.0,
                 aperf: 0,
                 mperf: 0,
+                tsc: 0,
                 inst: 0.0,
                 cyc: 0.0,
                 ipc: 0.0,
             };
 
-            if last.values.len() >= 9 && previous.values.len() >= 9 {
+            if last.values.len() >= 10 && previous.values.len() >= 10 {
                 let aperf_delta = last.values[2].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[2].trim().parse::<u64>().unwrap_or(0));
                 let mperf_delta = last.values[1].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[1].trim().parse::<u64>().unwrap_or(0));
+                let tsc_delta = last.values[9].trim().parse::<u64>().unwrap_or(0)
+                    .saturating_sub(previous.values[9].trim().parse::<u64>().unwrap_or(0));
 
                 res.aperf = aperf_delta;
                 res.mperf = mperf_delta;
+                res.tsc = tsc_delta;
 
                 let core_busy_delta = last.values[3].trim().parse::<u64>().unwrap_or(0)
                     .saturating_sub(previous.values[3].trim().parse::<u64>().unwrap_or(0));
@@ -2449,6 +2457,7 @@ pub struct CPUCoreMetrics {
     cpu_time_percentage: f64,
     aperf: u64,
     mperf: u64,
+    tsc: u64,
     inst: f64,
     cyc: f64,
     ipc: f64,
