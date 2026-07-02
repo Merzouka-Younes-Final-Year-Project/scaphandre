@@ -6,6 +6,7 @@ use aya_ebpf::{
     maps::{Array, PerCpuHashMap, RingBuf},
     programs::{PerfEventContext, TracePointContext}
 };
+use aya_log_ebpf::info;
 use scaphandre_common::{CpuEventType, CpuStateEvent};
 
 // TODO: Ask LLM about fixes from this side and simplify if possible
@@ -106,8 +107,10 @@ fn try_sched_switch(ctx: TracePointContext) -> Result<u32, u32> {
             } else {
                 let _ = PID_TIMES.insert(prev_tgid, delta, 0);
             };
+            info!(&ctx, "ADDING delta {} to PID {}", delta, prev_tgid);
             let _ = PID_LAST.remove(prev_tgid);
             if let Some(c_time) = CPU_TIME.get_ptr_mut(cpu) {
+                info!(&ctx, "ADDING delta={} to CPU TIME CORE {}", delta, cpu);
                 unsafe { *c_time += delta };
             }
         }
