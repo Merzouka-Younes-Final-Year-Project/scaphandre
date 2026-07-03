@@ -2,35 +2,18 @@
 #![no_main]
 
 use aya_ebpf::{
-    helpers::{bpf_get_current_pid_tgid, bpf_ktime_get_ns, generated::bpf_get_smp_processor_id}, macros::{map, perf_event, tracepoint},
+    helpers::{bpf_get_current_pid_tgid, bpf_ktime_get_ns, bpf_probe_read_kernel, generated::bpf_get_smp_processor_id}, macros::{map, perf_event, raw_tracepoint, tracepoint},
     maps::{Array, PerCpuHashMap, RingBuf},
-    programs::{PerfEventContext, TracePointContext}
+    programs::{PerfEventContext, RawTracePointContext, TracePointContext}
 };
 use scaphandre_common::{CpuEventType, CpuStateEvent};
 
-// TODO: Ask LLM about fixes from this side and simplify if possible
+mod vmlinux;
+use vmlinux::task_struct;
 
 const MAX_KEYS: u32 = 32768;
 const MAX_CPU: u32 = 256;
 const MAX_SOCKET: u16 = 64;
-
-/// Layout from /sys/kernel/debug/tracing/events/sched/sched_switch/format
-/// prev_state is i64 on kernels >= 5.14, i32 on older ones.
-/// Verified for x86_64. Check format file on other architectures.
-#[repr(C)]
-struct SchedSwitchArgs {
-    common_type:     u16,
-    common_flags:    u8,
-    common_preempt:  u8,
-    common_pid:      i32,
-    prev_comm:       [u8; 16],
-    prev_pid:        i32,
-    prev_prio:       i32,
-    prev_state:      i64,
-    next_comm:       [u8; 16],
-    next_pid:        i32,
-    next_prio:       i32,
-}
 
 /// Layout from /sys/kernel/debug/tracing/events/sched/sched_process_exit/format
 #[repr(C)]
@@ -52,9 +35,6 @@ static PID_TIMES: PerCpuHashMap<u32, u64> = PerCpuHashMap::with_max_entries(MAX_
 static PID_LAST: PerCpuHashMap<u32, u64> = PerCpuHashMap::with_max_entries(MAX_KEYS, 0);
 
 #[map]
-static TID_TO_TGID: aya_ebpf::maps::HashMap<u32, u32> = aya_ebpf::maps::HashMap::with_max_entries(MAX_KEYS, 0);
-
-#[map]
 static CPU_TIME: Array<u64> = Array::with_max_entries(MAX_CPU, 0);
 
 #[map]
@@ -67,34 +47,27 @@ static CPU_STATE_EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
 #[map]
 static CPU_TO_SOCKET: Array<u16> = Array::with_max_entries(MAX_CPU, 0);
 
-#[tracepoint]
-pub fn scaphandre(ctx: TracePointContext) -> u32 {
+#[raw_tracepoint(tracepoint = "sched_switch")]
+pub fn context_switch_tracker(ctx: RawTracePointContext) -> u32 {
     match try_sched_switch(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
     }
 }
 
-// AI: This should be renamed properly for what it does and synced with userspace code
-fn try_sched_switch(ctx: TracePointContext) -> Result<u32, u32> {
+fn try_sched_switch(ctx: RawTracePointContext) -> Result<u32, u32> {
     let now = unsafe { bpf_ktime_get_ns() };
     let cpu = unsafe { bpf_get_smp_processor_id() };
 
-    let args = unsafe {
-        ctx.read_at::<SchedSwitchArgs>(0).map_err(|_| 1u32)?
-    };
+    let prev = ctx.arg::<*const task_struct>(1);
+    let next = ctx.arg::<*const task_struct>(2);
 
-    // Use TGID (upper 32 bits of pid_tgid) so keys match userspace process PIDs.
-    // For next_pid we can read TGID directly; for prev we derive it from the tid via a lookup.
-    let prev_tid = args.prev_pid as u32;
-    let next_tgid = (bpf_get_current_pid_tgid() >> 32) as u32;
-    // Prev TGID: look up from our tid→tgid map seeded when tasks are scheduled in.
-    let prev_tgid = unsafe {
-        TID_TO_TGID.get(prev_tid).copied().unwrap_or(prev_tid)
-    };
+    let prev_tgid: u32 = unsafe { bpf_probe_read_kernel(&(*prev).tgid).map_err(|e| e as u32)? as u32 };
+    let next_tgid: u32 = unsafe { bpf_probe_read_kernel(&(*next).tgid).map_err(|e| e as u32)? as u32 };
+    let prev_tid: u32  = unsafe { bpf_probe_read_kernel(&(*prev).pid).map_err(|e| e as u32)? as u32 };
+    let next_tid: u32  = unsafe { bpf_probe_read_kernel(&(*next).pid).map_err(|e| e as u32)? as u32 };
 
-    // Seed tid→tgid for the incoming task so future prev lookups work.
-    let _ = TID_TO_TGID.insert(args.next_pid as u32, next_tgid, 0);
+
 
     // Accumulate time for the task that just got switched OFF the CPU
     // Skip the idle task (PID 0) so CPU_TIME only reflects non-idle runtime.
@@ -214,7 +187,7 @@ pub fn cpu_state_tick(_ctx: PerfEventContext) -> u32 {
 }
 
 #[tracepoint]
-pub fn scaphandre_process_exit(ctx: TracePointContext) -> u32 {
+pub fn process_exit_cleanup(ctx: TracePointContext) -> u32 {
     match try_process_exit(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
@@ -245,8 +218,6 @@ fn try_process_exit(ctx: TracePointContext) -> Result<u32, u32> {
             let _ = PID_LAST.remove(tgid);
         }
     }
-
-    let _ = TID_TO_TGID.remove(tid);
 
     if args.group_dead != 0 {
         let _ = PID_TIMES.remove(tgid);

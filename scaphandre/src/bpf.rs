@@ -1,7 +1,7 @@
 use aya::{
     maps::{MapData, RingBuf},
     programs::{
-        TracePoint, perf_event::{PerfEvent, PerfEventConfig, PerfEventScope, SamplePolicy, SoftwareEvent}
+        TracePoint, RawTracePoint, perf_event::{PerfEvent, PerfEventConfig, PerfEventScope, SamplePolicy, SoftwareEvent}
     },
     util::online_cpus,
 };
@@ -30,15 +30,15 @@ pub fn load() -> anyhow::Result<aya::Ebpf> {
         "/scaphandre"
     )))?;
 
-    let program: &mut TracePoint = ebpf.program_mut("scaphandre").unwrap().try_into()?;
+    let program: &mut RawTracePoint = ebpf.program_mut("context_switch_tracker").unwrap().try_into()?;
     program.load()?;
-    program.attach("sched", "sched_switch")?;
+    program.attach("sched_switch")?;
 
     let proc_exit: &mut TracePoint =
-        ebpf.program_mut("scaphandre_process_exit").unwrap().try_into()?;
+        ebpf.program_mut("process_exit_cleanup").unwrap().try_into()?;
     proc_exit.load()?;
     proc_exit.attach("sched", "sched_process_exit")?;
-    debug!("Loaded scaphandre_process_exit eBPF program.");
+    debug!("Loaded process_exit_cleanup eBPF program.");
 
     let tick: &mut PerfEvent = ebpf.program_mut("sample_tick").unwrap().try_into()?;
     tick.load()?;
