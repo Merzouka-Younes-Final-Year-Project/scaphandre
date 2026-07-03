@@ -470,7 +470,7 @@ impl CPUSocket {
                 if let Some(metrics) = c.get_core_metrics_delta() {
                     debug!("CORE: {}, IPC: {}, APERF: {}, MPERF: {}, TSC: {}", c.id, metrics.ipc, metrics.aperf, metrics.mperf, metrics.tsc);
                     if metrics.tsc > 0 {
-                        (1_f64 + metrics.ipc) * (metrics.aperf as f64 / metrics.tsc as f64)
+                        (1_f64 + metrics.ipc) * (metrics.aperf as f64) * (metrics.aperf as f64 / metrics.mperf as f64)
                     } else {
                         0.0
                     }
