@@ -65,9 +65,6 @@ fn try_sched_switch(ctx: RawTracePointContext) -> Result<u32, u32> {
     let prev_tgid: u32 = unsafe { bpf_probe_read_kernel(&(*prev).tgid).map_err(|e| e as u32)? as u32 };
     let next_tgid: u32 = unsafe { bpf_probe_read_kernel(&(*next).tgid).map_err(|e| e as u32)? as u32 };
     let prev_tid: u32  = unsafe { bpf_probe_read_kernel(&(*prev).pid).map_err(|e| e as u32)? as u32 };
-    let next_tid: u32  = unsafe { bpf_probe_read_kernel(&(*next).pid).map_err(|e| e as u32)? as u32 };
-
-
 
     // Accumulate time for the task that just got switched OFF the CPU
     // Skip the idle task (PID 0) so CPU_TIME only reflects non-idle runtime.
