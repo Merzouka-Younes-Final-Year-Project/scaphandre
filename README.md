@@ -32,12 +32,16 @@ Join us on [Gitter](https://gitter.im/hubblo-org/scaphandre) or [Matrix](https:/
 - measuring power/energy consumed on **bare metal hosts**
 - measuring power/energy consumed of **qemu/kvm virtual machines** from the host
 - **exposing** power/energy metrics of a virtual machine, to allow **manipulating those metrics in the VM** as if it was a bare metal machine (relies on hypervisor features)
+- **per-core power attribution** — distributes CPU-domain RAPL power to individual cores using hardware performance counters (APERF, MPERF, IPC)
+- **eBPF-based idle/activation detection** — real-time socket-level idle and activation power tracking without offline calibration
+- **background power subtraction** — automatically separates idle/activation overhead from active workload power
+- **process-level power attribution** — distributes per-core power to processes by eBPF-observed CPU time
 - exposing metrics as a **[prometheus](https://prometheus.io) (HTTP) exporter**
 - sending metrics in push mode to a **[prometheus](https://prometheus.io) [Push Gateway](https://github.com/prometheus/pushgateway)**
 - sending metrics to **[riemann](http://riemann.io/)**
 - sending metrics to **[Warp10](http://warp10.io/)**
 - works on **[kubernetes](https://kubernetes.io/)**
-- storing power consumption metrics in a **JSON** file
+- storing power consumption metrics in a **JSON** file (with per-core coefficient, proportion, and power breakdown)
 - showing basic power consumption metrics **in the terminal**
 - operating systems supported so far : **Gnu/Linux**, **Windows 10, 11 and Server 2016/2019/2022**
 - packages available for **RHEL 8 and 9, Debian 11 and 12 and Windows**, also **NixOS** (community support)
@@ -104,6 +108,55 @@ cargo build --package scaphandre --release \
 ```
 
 The cross-compiled program `target/${ARCH}-unknown-linux-musl/release/scaphandre` can be copied to a Linux server or VM and run there.
+
+## Repository Guide
+
+The project is organised as a Cargo workspace with three crates:
+
+### [`scaphandre/`](scaphandre/) — Main binary
+
+| Path | Purpose |
+|------|---------|
+| `src/main.rs` | Entry point: CLI parsing, exporter dispatch, top-level event loop |
+| `src/lib.rs` | Library root; re-exports sensor types |
+| `src/bpf.rs` | eBPF program loader: attaches `context_switch_tracker`, `sample_tick`, `cpu_state_tick`, and `process_exit_cleanup` programs |
+| `src/sensors/mod.rs` | **Core of the power attribution pipeline**: `Topology`, `CPUSocket`, `CPUCore`, `Domain` structs, coefficient calculation, proportional power attribution, idle/activation detection, background power, process tracking, eBPF ring-buffer draining |
+| `src/sensors/powercap_rapl.rs` | Linux RAPL sensor: reads energy counters from `powercap` sysfs, discovers domains, handles counter wraparound |
+| `src/sensors/utils.rs` | `ProcessTracker` — per-process CPU time tracking from eBPF or `/proc` fallback |
+| `src/sensors/units.rs` | Unit definitions (MicroJoule, MicroWatt, etc.) |
+| `src/exporters/` | Exporter implementations (JSON, Prometheus, stdout, Riemann, Warp10, QEMU) |
+
+### [`scaphandre-ebpf/`](scaphandre-ebpf/) — eBPF kernel-side programs
+
+| Path | Purpose |
+|------|---------|
+| `src/main.rs` | eBPF programs: `context_switch_tracker` (per-process CPU time on `sched_switch`), `sample_tick` (periodic PID_TIMES update), `cpu_state_tick` (idle/activation detection per socket), `process_exit_cleanup` (map entry cleanup on process exit) |
+| `src/vmlinux.rs` | Auto-generated kernel type definitions (BPD) |
+| `src/lib.rs` | Library target shim |
+
+The eBPF subsystem uses seven maps: `PID_TIMES`, `PID_LAST`, `TID_TO_TGID`, `CPU_TIME`, `CPU_SNAPSHOT`, `CPU_STATE_EVENTS` (ring buffer), and `CPU_TO_SOCKET`.
+
+### [`scaphandre-common/`](scaphandre-common/) — Shared types
+
+`src/lib.rs` defines `CpuEventType` and `CpuStateEvent` used by both the eBPF program and the userspace sensor.
+
+### Power attribution pipeline
+
+The current implementation uses **proportional per-core attribution** scoped to the CPU RAPL domain:
+
+1. Per-core coefficients are computed from hardware counters: `coef = (1 + IPC) × APERF × (APERF / MPERF)`
+2. Coefficients are normalised to proportions that sum to 1.0 across all cores
+3. Each core's power is `proportion × cpu_domain_power` (with background already subtracted)
+4. Process power is the sum across cores of `core_power × process_cpu_time_share` on that core
+
+**Idle/activation power** is tracked via the eBPF `cpu_state_tick` program (100 Hz): it classifies each socket as fully idle or exactly-one-core active, and records the current RAPL power as the idle/activation baseline. The maximum of the two (activation ≥ idle in practice) is subtracted as `background` from the raw RAPL reading before attribution.
+
+### Key documents
+
+| File | Content |
+|------|---------|
+| [`docs/overview.md`](docs/overview.md) | High-level architecture, coefficient derivation, eBPF maps, power attribution pipeline |
+| [`docs/json.md`](docs/json.md) | JSON exporter output format specification |
 
 ## ⚖️ License
 
