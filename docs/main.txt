@@ -1,0 +1,2480 @@
+‫ﺍلجمهوﺭ ية ﺍلشعبية ﺍلديمقرﺍطية ﺍلجزﺍئر ية‬
+République Algérienne Démocratique et Populaire
+‫وﺯﺍﺭﺓ ﺍلتعليم ﺍلعالي و ﺍلبحث ﺍلعلمي‬
+Ministère de l’Enseignement Supérieur et de la Recherche Scientifique
+
+‫ بسيدي بلعباﺱ‬.5491 ‫ ماي‬80 ‫ﺍلمدﺭسة ﺍلعليا للإعلام ﺍلآلي‬
+École Supérieure en Informatique
+-08 Mai 1945- Sidi Bel Abbès
+
+THESIS
+To obtain the diploma of Master
+Field: Computer Science
+Specialty: Ingénierie des Systèmes Informatiques (ISI)
+
+Theme
+Fine-Grained, Process-Level CPU and DRAM Energy
+Attribution in Linux
+Presented by:
+Merzouka Younes Abdel Samade
+Submission Date: June, 2026
+In front of the jury composed of:
+Mr. Someone
+Dr. Lahlou Laaziz
+Pr. Nadjia Kara
+Prof. Sidi Mohammed BENSLIMANE
+Mr. Someone
+Academic Year : 2025/2026
+
+President
+Supervisor
+Supervisor
+Supervisor
+Examiner
+
+Acknowledgements
+First and foremost, I am grateful to Allah Almighty for granting me the strength and
+clarity to pursue this work, for placing this theme in my path in the first place, and for
+everything He has allowed me to reach and accomplish. His guidance has been present
+throughout, even when I could not see it.
+To my family — thank you for your patience, your understanding, and your continuous
+support and encouragement throughout this journey. Your belief in me never wavered, and
+that meant more than I can express.
+I would like to express my sincere gratitude to my supervisors, Dr. Lahlou Laaziz, Pr.
+Nadjia Kara, and Prof. Sidi Mohamed Benslimane, for accompanying me through the different stages of this work. Their guidance, patience, and dedication shaped this thesis in ways
+I did not always notice at the time, and I am grateful for the time and effort they invested.
+Finally, I extend my thanks to everyone who, in one way or another, contributed to
+bringing me to where I am today.
+
+1
+
+Abstract
+Fine-grained energy attribution — determining how much energy individual software
+entities consume at runtime — is a prerequisite for any software-level approach to managing or
+optimising the energy consumption of modern computing infrastructure. This thesis examines
+the current state of that capability in Linux systems.
+The work surveys the hardware measurement interfaces and dynamic processor mechanisms that govern what energy data is available and how it behaves, analyses the structural
+challenges that make attributing that data to individual processes and containers difficult,
+and critically evaluates the tools and approaches the research community has developed in
+response. The review organises existing work by attribution goal and methodological family,
+distinguishing model-based from formula-based approaches and tracing the progress each has
+made.
+The analysis shows that meaningful progress has been made: model-based approaches
+have advanced toward fully adaptive, self-calibrating systems that require no offline calibration, while formula-based approaches have progressively extended their hardware coverage to
+jointly address dynamic frequency scaling, simultaneous multithreading, and Non-Uniform
+Memory Access (NUMA) topology. Yet fundamental limitations persist across both families.
+No existing tool achieves real-time coverage of all relevant hardware mechanisms without
+excessive overhead. Idle and residual energy are not consistently separated from active attribution. And the proportional distribution mechanism that underlies virtually all reviewed
+approaches cannot correctly isolate energy changes at the granularity at which they originate
+— a structural flaw no amount of calibration or more expressive formulas can resolve. These
+three dimensions together define the open problem the existing literature has not closed.
+Keywords— Fine-grained energy attribution, power measurement, Linux, Running Average
+Power Limit (RAPL), software-defined power meters, Non-Uniform Memory Access (NUMA), Simultaneous Multithreading (SMT)
+
+2
+
+‫ﺍلملخص‬
+‫يعُ َدّ ﺍلإسناﺩ ﺍلدقيق للطاقة — ﺃي تحديد كمية ﺍلطاقة ﺍلتي تستهل�كها كل كيان برمجي منفرﺩ ﺃثناﺀ ﺍلتشغيل — شرطا ً ﺃساسيا ً لأي نهج‬
+‫برمجي يهدف ﺇلى ﺇﺩﺍﺭﺓ ﺍستهلاك ﺍلطاقة في ﺍلبنى ﺍلتحتية ﺍلحاسو بية ﺍلحديثة ﺃو تحسينه‪ .‬تدﺭﺱ هذه ﺍلأطروحة ﺍلوضع ﺍلرﺍهن لهذه ﺍلقدﺭﺓ في‬
+‫ﺃنظمة لينكس‪.‬‬
+‫يستعرﺽ ﺍلعمل وﺍجهاﺕ ﺍلقياﺱ ﺍلماﺩية وﺁلياﺕ ﺍلمعالج ﺍلديناميكية ﺍلتي تحدﺩ ﺍلبياناﺕ ﺍلطاقو ية ﺍلمتاحة وطر يقة سلوكها‪ ،‬و يحلل‬
+‫ﺍلتحدياﺕ ﺍلبنيو ية ﺍلتي تجعل ﺇسناﺩ هذه ﺍلبياناﺕ ﺇلى ﺍلعملياﺕ وﺍلحاو ياﺕ ﺍلفرﺩية ﺃمرﺍ ً عسيرﺍ ً‪ ،‬و يقي ّم بصوﺭﺓ نقدية ﺍلأﺩوﺍﺕ وﺍلمناهج ﺍلتي‬
+‫طو ّﺭها مجتمع ﺍلبحث ﺍلعلمي ﺍستجابة لذلك‪ .‬تنُظم ﺍلمرﺍجعة ﺍلأعمال ﺍلقائمة وفق هدف ﺍلإسناﺩ وﺍلعائلة ﺍلمنهجية‪ ،‬ممي ّزﺓ بين ﺍلمناهج ﺍلقائمة على‬
+‫ﺍلنماﺫﺝ وتلك ﺍلقائمة على ﺍلصيغ ﺍلر ياضية‪ ،‬وتتتبع ﺍلتقدم ﺍلذي ﺃحرﺯته كل منها‪.‬‬
+‫ت ُظهر ﺍلتحليلاﺕ ﺃن تقدما ً ملموسا ً قد تحقق‪ :‬فقد تطوﺭﺕ ﺍلمناهج ﺍلقائمة على ﺍلنماﺫﺝ نحو ﺃنظمة تكيفية بالكامل وﺫﺍتية ﺍلمعايرﺓ لا تستلزم‬
+‫ﺃي معايرﺓ خاﺭﺝ ﺍلخط‪ ،‬في حين وسّ عت ﺍلمناهج ﺍلقائمة على ﺍلصيغ تغطيتها ﺍلماﺩية تدﺭ يجيا ً لمعالجة مقياﺱ ﺍلترﺩﺩ ﺍلديناميكي وتعدﺩ ﺍلخيوﻁ‬
+‫ﺍلمتزﺍمن وطو بولوجيا )‪ Non-Uniform Memory Access (NUMA‬معا‪ ً.‬غير ﺃن قيوﺩﺍ ً جوهر ية لا تزﺍل قائمة في كلتا ﺍلعائلتين‪ .‬فلا‬
+‫توجد ﺃﺩﺍﺓ حالية تحقق تغطية فوﺭ ية لجميع ﺍلآلياﺕ ﺍلماﺩية ﺫﺍﺕ ﺍلصلة ﺩون تكاليف ﺇضافية مفرطة‪ .‬ولا تفُ صل طاقة ﺍلخمول وﺍلطاقة ﺍلمتبقية‬
+‫بصوﺭﺓ منتظمة عن ﺍلإسناﺩ ﺍلنشط‪ .‬وفضلا ً عن ﺫلك‪ ،‬يعجز ﺁلية ﺍلتوﺯ يع ﺍلنسبي ﺍلتي تقوم عليها تقر يبا ً جميع ﺍلمناهج ﺍلمرُ ﺍجعة عن عزل تغيرﺍﺕ‬
+‫ﺍلطاقة بالدقة ﺍلتي تنشأ عندها — وهو خلل بنيوي لا يمكن لأي قدﺭ من ﺍلمعايرﺓ ﺃو ﺍلصيغ ﺍلأكثر تعبيرﺍ ً ﺃن يعالجه‪ .‬وتُ حدﺩ هذه ﺍلأبعاﺩ‬
+‫ﺍلثلاثة مجتمعة ﺍلمسألة ﺍلمفتوحة ﺍلتي لم تغُ لقها ﺍلأﺩبياﺕ ﺍلقائمة حتى ﺍللحظة‪.‬‬
+
+‫ﺍلكلماﺕ ﺍلمفتاحية‪ :‬ﺇسناﺩ ﺍلطاقة ﺍلدقيق‪ ،‬قياﺱ ﺍلطاقة‪ ،‬لينكس‪ ،Running Average Power Limit (RAPL) ،‬مقاييس‬
+‫ﺍلطاقة ﺍلبرمجية‪Simultaneous Multithreading (SMT) ،Non-Uniform Memory Access (NUMA) ،‬‬
+
+‫‪3‬‬
+
+Résumé
+L’attribution énergétique fine — déterminer la quantité d’énergie consommée par chaque entité
+logicielle individuelle à l’exécution — est un prérequis pour toute approche logicielle visant à gérer
+ou optimiser la consommation énergétique des infrastructures informatiques modernes. Cette thèse
+examine l’état actuel de cette capacité dans les systèmes Linux.
+Le travail passe en revue les interfaces de mesure matérielles et les mécanismes dynamiques
+des processeurs qui déterminent quelles données énergétiques sont disponibles et comment elles
+se comportent, analyse les défis structurels qui rendent difficile l’attribution de ces données à des
+processus et conteneurs individuels, et évalue de manière critique les outils et approches développés
+en réponse par la communauté de recherche. La revue organise les travaux existants selon l’objectif
+d’attribution et la famille méthodologique, en distinguant les approches basées sur des modèles de
+celles basées sur des formules, et en retraçant les progrès accomplis par chacune.
+L’analyse montre que des progrès significatifs ont été réalisés : les approches basées sur des
+modèles ont évolué vers des systèmes entièrement adaptatifs et auto-calibrés ne nécessitant aucune
+calibration hors ligne, tandis que les approches basées sur des formules ont progressivement étendu
+leur couverture matérielle pour traiter conjointement la mise à l’échelle dynamique de fréquence, le
+multithreading simultané et la topologie Non-Uniform Memory Access (NUMA). Cependant, des
+limitations fondamentales persistent dans les deux familles. Aucun outil existant ne réalise une couverture en temps réel de tous les mécanismes matériels pertinents sans surcharge excessive. L’énergie
+inactive et résiduelle n’est pas systématiquement séparée de l’attribution active. Et le mécanisme
+de distribution proportionnelle qui sous-tend pratiquement toutes les approches examinées ne peut
+pas isoler correctement les variations énergétiques à la granularité à laquelle elles se produisent —
+un défaut structurel qu’aucune calibration ni formule plus expressive ne peut résoudre. Ces trois
+dimensions définissent ensemble le problème ouvert que la littérature existante n’a pas résolu.
+Keywords— Attribution énergétique fine, mesure de puissance, Linux, Running Average Power
+Limit (RAPL), wattmètres logiciels, Non-Uniform Memory Access (NUMA), Simultaneous Multithreading (SMT)
+
+4
+
+CONTENTS
+
+Introduction
+
+11
+
+I
+
+14
+
+Background
+
+1 Energy Consumption and Sustainability
+1.1 Total Cost of Ownership and the Energy Problem . . . . . . . . . . . . . . . . . . .
+1.2 The AI Era: New Patterns, New Challenges . . . . . . . . . . . . . . . . . . . . . . .
+
+15
+15
+16
+
+2 Energy and Power Measurement
+2.1 Energy and Power: Core Definitions . . . . . . . . . . . . . . . . . . . . . . . . . . .
+2.2 External Power Measurement . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+2.2.1 Dedicated External Watt Meters . . . . . . . . . . . . . . . . . . . . . . . . .
+2.2.2 Power Distribution Units and IPMI . . . . . . . . . . . . . . . . . . . . . . .
+2.2.3 Limitations and Appropriate Use Cases . . . . . . . . . . . . . . . . . . . . .
+2.3 On-Chip Power Metering . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+2.3.1 Running Average Power Limit . . . . . . . . . . . . . . . . . . . . . . . . . . .
+2.3.1.1 RAPL Domains . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+2.3.1.2 Accessing RAPL . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+2.3.1.3 Intel RAPL . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+2.3.1.4 AMD RAPL . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+2.3.1.5 AMD Application Power Management (Legacy) . . . . . . . . . . . .
+2.3.2 GPU On-Chip Interfaces . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+
+18
+18
+18
+18
+19
+19
+20
+20
+20
+22
+22
+22
+23
+23
+
+3 Energy-Oriented Hardware Mechanisms
+24
+3.1 Static and Dynamic Power . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24
+3.2 Frequency and Voltage Scaling . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 24
+3.3 Dynamic Performance Boosting . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+3.4 Idle Power Management . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+3.4.1 Clock Gating . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 25
+3.4.2 Power Gating . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26
+3.4.3 C-states . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26
+3.5 Simultaneous Multithreading . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 26
+3.6 Non-Uniform Memory Access . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 27
+3.6.1 Architecture and Performance Characteristics . . . . . . . . . . . . . . . . . . 27
+3.6.2 Energy Characteristics of Memory in Multi-Socket Systems . . . . . . . . . . 28
+
+5
+
+4 Challenges in Software Energy Attribution
+4.1 The Fundamental Attribution Gap . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+4.2 Hardware Complexity and Variability . . . . . . . . . . . . . . . . . . . . . . . . . .
+4.3 Attribution Ambiguity . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+4.4 Practical and Systemic Constraints . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+
+29
+29
+29
+30
+31
+
+5 Energy Attribution Tools and Interfaces
+32
+5.1 eBPF . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32
+5.1.1 Hook Points . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 32
+5.1.2 Maps . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+5.1.3 Verifier and Safety . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+5.2 Hardware Performance Counters . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 33
+5.3 The /proc Filesystem . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 34
+5.4 Control Groups . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 35
+5.5 Libvirt . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 35
+
+II
+
+State of Art
+
+36
+
+6 Introduction
+
+37
+
+7 Energy Attribution Goals
+7.1 Stable Attribution . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+7.2 Context-Dependent Attribution . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+
+38
+38
+40
+
+8 Key Research in Energy Attribution
+8.1 Model-Based Approaches . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+8.2 Formula-Based Approaches . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+
+41
+41
+44
+
+9 Synthesis and Comparison
+
+49
+
+10 Discussion and Gap Identification
+
+53
+
+11 Conclusion
+
+56
+
+Conclusion
+
+58
+
+Final Remarks
+
+58
+
+Bibliography
+
+64
+
+6
+
+LIST OF FIGURES
+
+2.1
+2.2
+2.3
+2.4
+
+ZES ZIMMER LMG450 power analyzer . . . . . . . . . . . . . . . . . . . . . . . . .
+ZES ZIMMER LMG670 channel power analyzer . . . . . . . . . . . . . . . . . . . .
+Power Distribution Unit (PDU) with power data recording . . . . . . . . . . . . . .
+Running Average Power Limit (RAPL) power domain hierarchy . . . . . . . . . . . .
+
+19
+19
+20
+21
+
+3.1
+
+Two-Non-Uniform Memory Access (NUMA)-node system diagram . . . . . . . . . .
+
+27
+
+5.1
+5.2
+
+Extended Berkeley Packet Filter (eBPF) ecosystem overview . . . . . . . . . . . . .
+eBPF hook points in the Linux kernel . . . . . . . . . . . . . . . . . . . . . . . . . .
+
+33
+34
+
+8.1
+8.2
+8.3
+8.4
+8.5
+8.6
+8.7
+8.8
+8.9
+
+WattsKit architecture-agnostic training pipeline . . . . . . . . . . . . . . . . . . . . .
+SmartWatts self-calibrating architecture overview . . . . . . . . . . . . . . . . . . . .
+SmartWatts cluster deployment diagram . . . . . . . . . . . . . . . . . . . . . . . . .
+SelfWatts four-layer architecture . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+SelfWatts deployment with Controller and Sensor . . . . . . . . . . . . . . . . . . . .
+DEEP-Mon monitoring agent structure . . . . . . . . . . . . . . . . . . . . . . . . .
+EnergAt energy credit during parallel execution . . . . . . . . . . . . . . . . . . . . .
+METRION time interval decomposition . . . . . . . . . . . . . . . . . . . . . . . . .
+Central Processing Unit (CPU) package energy attribution and runtime overhead
+results for METRION, EnergAt, and Scaphandre across CPU-bound, memory-bound,
+and combined workloads. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+
+42
+43
+43
+45
+46
+46
+47
+48
+
+10.1 PPEM-BM estimation error vs. rank . . . . . . . . . . . . . . . . . . . . . . . . . . .
+10.2 RAPL vs. Kepler Package (CPU socket) (PKG) power under C-state settings . . . .
+
+54
+55
+
+7
+
+48
+
+LIST OF TABLES
+
+9.1
+
+Comparison of key energy attribution works. ∼ denotes that C-state effects are passively observed via Actual Performance Register (APERF)/Maximum Performance
+Register (MPERF) frequency averaging (cores in deep idle approach zero effective
+frequency) but are not explicitly modelled. . . . . . . . . . . . . . . . . . . . . . . . .
+
+8
+
+50
+
+LIST OF ACRONYMS
+
+ACPI Advanced Configuration and Power Interface. 25, 26
+AI Artificial Intelligence. 11, 12, 16, 17
+AMD Advanced Micro Devices. 11, 20, 22, 23, 25
+APERF Actual Performance Register. 8, 34, 35, 42–44, 47, 50, 51
+API Application Programming Interface. 23, 35
+APM Application Power Management. 23
+BMC Baseboard Management Controller. 19
+CO2 Carbon Dioxide. 16
+CPU Central Processing Unit. 7, 11, 12, 20, 21, 23–27, 29, 33–35, 37, 38, 40–43, 45, 47, 48, 50,
+52–54, 56, 58
+DRAM Dynamic Random Access Memory. 11, 12, 21–23, 27–29, 37, 42, 43, 46–48, 50, 53, 56, 58
+DVFS Dynamic Voltage and Frequency Scaling. 24, 25, 28, 35, 42, 43, 47, 48, 50, 54, 56, 58
+eBPF Extended Berkeley Packet Filter. 7, 22, 32–35, 41, 46, 47
+eDRAM Embedded Dynamic Random Access Memory. 21
+EPC Energy-Proportional Computing. 15
+GPU Graphics Processing Unit. 20, 21, 23, 37
+HT HyperThreading. 46
+HwPC Hardware Performance Counter. 37, 41–44, 50
+IEA International Energy Agency. 16
+IPMI Intelligent Platform Management Interface. 19, 20
+KVM Kernel-based Virtual Machine. 35
+
+9
+
+LLC Last Level Cache. 47, 51
+MAPE Mean Absolute Percentage Error. 47
+MPERF Maximum Performance Register. 8, 34, 35, 43, 44, 47, 50, 51
+MSR Model-Specific Register. 22, 43, 44
+NUMA Non-Uniform Memory Access. 2–4, 7, 11, 27, 28, 45–48, 50–52, 54, 56, 58
+NVML NVIDIA Management Library. 23
+OS Operating System. 26, 41
+P-states Performance states. 25, 26, 28
+PDU Power Distribution Unit. 7, 19, 20
+PID Process Identifier. 33–35
+PKG Package (CPU socket). 7, 20–22, 55
+PMU Performance Monitoring Unit. 33, 43
+PP0 Power Plane 0. 21, 22
+PP1 Power Plane 1. 21
+PUE Power Usage Effectiveness. 15
+QEMU Quick Emulator. 35
+RAPL Running Average Power Limit. 2–4, 7, 11, 20–23, 29, 30, 37, 41–47, 55
+RFE Recursive Feature Elimination. 44, 50
+SMI System Management Interface. 23
+SMT Simultaneous Multithreading. 2–4, 26, 27, 42, 45–48, 50–52, 54, 56, 58
+SoC System-on-Chip. 21
+TCO Total Cost of Ownership. 15, 16
+TDP Thermal Design Power. 25
+TID Thread Identifier. 34
+TMT Temporal Multithreading. 26
+TSDB Time-Series Database. 44
+UCC Unhalted Core Cycles. 45, 47
+VM Virtual Machine. 16, 35, 38, 39
+WCPC Worst-Case Power Consumption. 38
+
+10
+
+INTRODUCTION
+
+Context
+Accurate, real-time visibility into the energy consumed by individual software entities — processes, containers, virtual machines — is a prerequisite for a broad class of approaches to managing
+and optimising the energy footprint of modern computing infrastructure. Energy-aware scheduling, workload placement, and consumption-based accountability all depend on being able to answer
+the same basic question at runtime: how much energy is this software entity drawing right now?
+Without that capability, the system cannot be observed at the granularity at which it can be acted
+upon.
+This need has sharpened considerably in recent years. Data centre energy consumption is growing rapidly under the pressure of Artificial Intelligence (AI) workloads, with electricity demand
+projected to approach 945 TWh globally by 2030. Efficiency improvements at the hardware and
+infrastructure level, while necessary, are insufficient on their own: measuring and attributing energy
+consumption accurately, down to the workload and process level, is a prerequisite for directing optimisation efforts where they will have genuine impact. Fine-grained energy attribution is no longer
+solely an operational concern for cost management — it is an environmental and infrastructural
+necessity.
+
+Problem Statement
+Despite its importance, fine-grained energy attribution at the process and container level remains
+an unsolved problem. Hardware energy interfaces — most notably Intel and Advanced Micro Devices
+(AMD)’s Running Average Power Limit (RAPL) — report aggregate consumption at the Central
+Processing Unit (CPU) package and Dynamic Random Access Memory (DRAM) domain level, not
+at the granularity of individual software entities. Bridging this gap requires constructing an indirect
+model: observe how each software entity uses hardware resources, and use those observations as a
+basis for partitioning the measured total. This makes attribution inherently a modelling problem
+rather than a measurement problem.
+The challenge is compounded by the dynamic behaviour of modern processors: continuous percore frequency and voltage adjustments, idle power state transitions, simultaneous multithreading,
+and Non-Uniform Memory Access (NUMA) topology all cause the relationship between observable
+software activity and actual energy consumption to be non-linear, time-varying, and hardwarespecific. Existing tools and approaches address these complications to varying degrees, but no
+current solution jointly achieves real-time coverage of all relevant hardware mechanisms, consistent
+treatment of idle and residual energy, and overhead compatible with production deployment.
+
+11
+
+Research Goals
+This thesis examines whether fine-grained CPU and DRAM energy attribution currently exists
+as a practical capability for Linux systems. Specifically, it aims to:
+• Establish the technical foundations governing what energy data is available and at what
+granularity on modern hardware.
+• Analyse the structural challenges that make attributing that data to individual software
+entities difficult.
+• Survey and critically evaluate the tools and approaches the research community has developed
+in response, organised by attribution goal and methodological family.
+• Synthesise the findings into a comparative analysis that identifies where meaningful progress
+has been made and where fundamental limitations persist.
+The scope is intentionally bounded to CPU and DRAM attribution at the process and container
+level, as these are the primary targets in the existing literature and the level at which attribution
+decisions have direct operational relevance.
+
+Thesis Organisation
+This thesis is organised into two parts:
+• Part I (Background): Establishes the technical and structural foundations of energy attribution across five chapters:
+– Chapter 1 (Energy Consumption and Sustainability): Examines the relationship
+between energy consumption, data centre operations, and sustainability in the AI era.
+– Chapter 2 (Energy and Power Measurement): Establishes the technical background regarding how power consumption is measured on compute nodes.
+– Chapter 3 (Energy-Oriented Hardware Mechanisms): Explores the low-level
+CPU and memory hardware mechanisms affecting energy efficiency.
+– Chapter 4 (Challenges in Software Energy Attribution): Analyzes the fundamental and systemic complexities in attributing total consumption to individual processes.
+– Chapter 5 (Energy Attribution Tools and Interfaces): Introduces the systemlevel interfaces and kernel abstractions that attribution tools build upon.
+• Part II (State of the Art): Surveys the existing literature on software-level energy attribution, organizing it by goal and method across six chapters:
+– Chapter 6 (Introduction): Establishes the scope and boundary of the state of the
+art survey.
+– Chapter 7 (Energy Attribution Goals): Distinguishes between stable and contextdependent energy attribution methods.
+– Chapter 8 (Key Research in Energy Attribution): Focuses on the details of
+model-based and formula-based attribution approaches.
+– Chapter 9 (Synthesis and Comparison): Summarizes the characteristics and limitations of the reviewed literature in a comparative table.
+
+12
+
+– Chapter 10 (Discussion and Gap Identification): Discusses open gaps and structural challenges in existing tools.
+– Chapter 11 (Conclusion): Summarizes the findings of the survey and outlines the
+open research problem.
+The thesis closes with a Conclusion chapter that draws together the key findings and defines
+the open problem the existing literature has not closed.
+
+13
+
+Part I
+Background
+
+14
+
+CHAPTER 1
+ENERGY CONSUMPTION AND SUSTAINABILITY
+
+Sustainability has been a growing concern in the computing industry for several decades, driven
+initially by operational economics and more recently by environmental imperatives.
+
+1.1
+
+Total Cost of Ownership and the Energy Problem
+
+The earliest sustained interest in energy efficiency in data centres was grounded not in environmental concern but in cost. Structured Total Cost of Ownership (TCO) modelling for data centres
+identified five main cost components:
+• Infrastructure — physical facility construction and maintenance
+• Server acquisition — hardware procurement and refresh cycles
+• Networking — interconnect infrastructure
+• Power — energy consumed by IT equipment and the facility systems supporting it
+• Maintenance — ongoing operational labour and support costs
+Of these, power consistently emerged as a primary target for optimisation, not because it was
+necessarily the largest component in absolute terms, but because it was the most sensitive to
+engineering decisions [1]. Energy cost in a data centre has two layers: the electricity consumed by
+servers themselves, and the overhead consumed by the cooling, lighting, and power distribution
+infrastructure that supports them. Power Usage Effectiveness (PUE), introduced in 2007 and
+endorsed by The Green Grid as a global standard, was developed precisely to make this distinction
+legible — it measures the ratio of total facility energy to IT equipment energy, giving operators a
+single number that captures how efficiently power reaches useful work [2]. Operating cost is linearly
+dependent on PUE, making it the central lever through which infrastructure and cooling choices
+translate directly into financial outcomes [1].
+This cost framing motivated two parallel research directions: optimising the energy efficiency
+of server hardware itself, and improving the energy efficiency of data centre infrastructure. On
+the hardware side, an influential example is the research by Barroso and Hölzle, who established
+that servers spend most of their time at 10–50% of peak utilisation, yet consume close to half
+their peak power even while nearly idle, and proposed Energy-Proportional Computing (EPC) —
+hardware that consumes energy in direct proportion to the work it performs — as the foundational
+design goal [3]. On the infrastructure side, PUE reduction became a major engineering direction,
+pursued through approaches such as direct liquid cooling, alternative power delivery architectures,
+and evaporative cooling systems [1].
+
+15
+
+As hardware and infrastructure efficiency improved, and as virtualisation became the dominant deployment model, a third direction emerged: attributing energy consumption to the software
+workloads running on servers. If a physical server runs dozens of virtual machines or containers simultaneously, knowing its aggregate power draw is insufficient for cost allocation, workload
+scheduling, or capacity planning. This motivated a body of work on per-Virtual Machine (VM) and
+per-container power modelling and metering that extended the TCO optimisation concern down to
+the software layer [4, 5, 6, 7].
+
+1.2
+
+The AI Era: New Patterns, New Challenges
+
+The emergence of Artificial Intelligence (AI) as a dominant data centre workload has introduced
+a qualitatively different set of pressures on top of the existing cost and efficiency concerns. AI
+workloads require high-performance accelerated servers whose power density significantly exceeds
+that of conventional server deployments, and they operate at a scale and growth rate that existing
+infrastructure was not designed to absorb.
+Some of these challenges are already materialising:
+• The three largest hyperscalers reported a 54% increase in data centre capital expenditure
+between 2022 and 2023, rising from $78 billion to $120 billion [8], reflecting the pace at which
+physical infrastructure is being built out to meet AI demand.
+• A number of power grids have already halted or slowed new data centre connections to
+preserve grid reliability, with documented cases including Dominion Energy in Virginia [9]
+and EirGrid in Ireland [10], with the shortfall in the most stressed grids severe enough that
+even under the most permissive scenarios available capacity cannot meet projected demand
+[8].
+• The inability of grids to meet demand has led to climate-unfriendly measures, including
+delaying the retirement of fossil-based generation plants [8].
+Others are projected based on current trajectories:
+• The International Energy Agency (IEA) projects data centre electricity demand reaching approximately 945 TWh by 2030, representing just under 3% of global electricity consumption,
+with electricity consumption in accelerated servers growing at roughly 30% per year compared
+to 9% for conventional servers [11].
+• Data centre Carbon Dioxide (CO2) emissions are projected to reach approximately 1% of
+global emissions by 2030, making data centres one of the few sectors where emissions are
+expected to grow rather than decline as others decarbonise [11].
+• AI training and inference carry substantial and growing carbon footprints — Meta’s Llama370B carries more than six times the training carbon footprint of its predecessor, and inference
+optimisation can further multiply total emissions by two to three times [12, 13].
+A structural dimension compounds all of these challenges. As hardware becomes more efficient,
+the lower cost of computation encourages higher usage, potentially offsetting efficiency gains through
+increased demand — the economic phenomenon known as Jevons’s paradox [12]. This means that
+efficiency improvements at the hardware or infrastructure level, while necessary, are not sufficient
+on their own: measuring and attributing energy consumption accurately, down to the workload and
+process level, becomes a prerequisite for directing optimisation efforts where they will have genuine
+impact and for verifying that those efforts are not simply absorbed by demand growth.
+The trajectory described here — from TCO-driven hardware optimisation, through infrastructure efficiency, to software-level attribution, and now to the intensified pressures of the AI era —
+
+16
+
+establishes the context in which the research examined in this work operates. The gradual shift
+of focus toward software-level energy visibility was already underway before AI reshaped the landscape; the new pressures have accelerated that shift and raised its stakes considerably. Fine-grained
+energy attribution is no longer solely an operational concern for data centre cost management — it
+is an environmental and infrastructural necessity. Realising it, however, first requires understanding
+how energy information can be obtained from the hardware in the first place — the subject of the
+following section.
+
+17
+
+CHAPTER 2
+ENERGY AND POWER MEASUREMENT
+
+This chapter establishes the technical background necessary to understand how power consumption is measured in modern compute nodes. It begins with the core physical quantities involved,
+then surveys the two main measurement approaches — external hardware instruments and on-chip
+software interfaces — covering their operating principles, practical trade-offs, and the limitations
+most relevant to fine-grained energy attribution.
+
+2.1
+
+Energy and Power: Core Definitions
+
+Energy and power are related but distinct physical quantities. Power is the instantaneous rate
+at which work is performed, while energy is the total work done over a period of time. They are
+related by the equation:
+Z
+t
+
+E=
+
+P (t) dt
+
+(2.1)
+
+0
+
+meaning energy is the integral of power over time [14]. In the context of computing systems, power
+corresponds to how much electrical work a component is drawing at any given moment, while energy
+corresponds to the total electrical work consumed over the duration of a workload or interval. This
+distinction matters in practice: a tool that samples power at low frequency and integrates those
+samples will miss short-lived bursts of consumption, accumulating error proportional to how much
+the power profile varies between samples.
+
+2.2
+
+External Power Measurement
+
+External power measurement refers to instruments placed outside the compute node itself,
+typically between the wall socket and the power supply, or integrated into the data centre power
+delivery infrastructure. They share a common characteristic: they observe the node as a whole and
+report aggregate consumption without any visibility into individual internal components.
+
+2.2.1
+
+Dedicated External Watt Meters
+
+Dedicated external power meters, such as the ZES ZIMMER LMG450 or the ZES LMG670,
+offer the highest accuracy of any measurement category.
+Despite this precision, they are constrained to sampling intervals of 50 ms at best, and other
+widely used instruments such as the Watts Up Pro, Cray PMDB, and Yokogawa WT230 operate at
+intervals of 100 ms or slower [15]. All external meters share a further fundamental limitation: they
+
+18
+
+Figure 2.1: ZES ZIMMER LMG450 power analyzer
+
+Figure 2.2: ZES ZIMMER LMG670 channel power analyzer
+observe the node as a whole and provide no visibility into the consumption of individual components. Their role in practice is therefore primarily one of calibration and validation: they provide a
+trustworthy ground-truth reference against which software-based interfaces can be compared [16].
+
+2.2.2
+
+Power Distribution Units and IPMI
+
+At the infrastructure level, Power Distribution Unit (PDU) with measurement capability and
+server-integrated Baseboard Management Controller (BMC) accessible via the Intelligent Platform
+Management Interface (IPMI) represent the most commonly deployed approach in clusters and
+data centres, primarily because they require no additional hardware and scale without per-machine
+instrumentation.
+Both PDUs and IPMI-based interfaces typically report at intervals of around 1 second [17], and
+like dedicated external meters, they operate at the node level with no visibility into individual components — making them suitable for coarse energy accounting but not for fine-grained attribution.
+
+2.2.3
+
+Limitations and Appropriate Use Cases
+
+Taken together, external measurement approaches share two fundamental limitations that restrict their applicability to process-level or component-level energy attribution:
+
+19
+
+Figure 2.3: PDU with power data recording
+• Low temporal resolution. Even the most precise dedicated meters are limited to roughly
+50 ms intervals, and infrastructure-level interfaces such as IPMI operate at 1 Hz or slower
+[17].
+• No component-level visibility. Every reading reflects the entire node; there is no way
+to distinguish the contribution of the Central Processing Unit (CPU), memory, Graphics
+Processing Unit (GPU), or any other subsystem — a fundamental constraint for software
+optimisations that require component-level insight [18].
+Where external instruments remain valuable is in validating software-based interfaces: because
+they are independent of the system under test, they provide a reliable baseline against which on-chip
+estimates can be checked [16].
+
+2.3
+
+On-Chip Power Metering
+
+On-chip power interfaces are software-accessible mechanisms built directly into modern processors and GPUs. Unlike external instruments, they do not require additional hardware, introduce
+negligible overhead, and expose consumption at the component level. Their trade-offs differ by
+vendor and generation, and understanding those differences is necessary for interpreting the values
+they produce.
+
+2.3.1
+
+Running Average Power Limit
+
+Running Average Power Limit (RAPL) is a hardware-level energy monitoring interface that
+exposes per-domain energy counters accumulating continuously from processor boot, requiring no
+initialisation. It carries negligible measurement overhead — tests on standalone systems show
+a maximum overhead of approximately 1.2% even at sampling frequencies up to 1.1 kHz [19].
+Both Intel and Advanced Micro Devices (AMD) expose RAPL interfaces on modern processors,
+though their implementations differ in domain coverage, measurement approach, and accuracy
+characteristics, as detailed in the subsections below.
+
+2.3.1.1 RAPL Domains
+RAPL organises energy reporting around the concept of power domains: hardware-scoped units
+that each report cumulative energy consumption for a specific component or sub-part of the processor. In multi-socket systems, each domain is scoped per socket. The set of available domains varies
+by processor architecture and is illustrated in Figure 2.4.
+The domains are as follows [19]:
+• Package (CPU socket) (PKG) — Reports total energy consumption of the entire socket,
+including all cores, integrated graphics, and uncore components such as last-level caches and
+the memory controller. This is the only universally supported domain across all RAPLcapable architectures.
+
+20
+
+Figure 2.4: RAPL power domain hierarchy
+• Power Plane 0 (PP0) — Reports the combined energy of all processor cores on the socket.
+It is a subset of PKG, meaning its value is already included in the PKG total.
+• Power Plane 1 (PP1) — Reports energy consumed by the processor’s integrated GPU.
+Available on desktop models only and also a subset of PKG.
+• Dynamic Random Access Memory (DRAM) — Reports energy for the RAM directly
+attached to the integrated memory controller of a given socket. In multi-socket systems, each
+socket exposes its own DRAM counter [20].
+• PSys (Platform) — Introduced with Skylake, this domain monitors energy for the entire
+System-on-Chip (SoC), including components attributed to neither the CPU nor the GPU
+such as the Platform Controller Hub, the System Agent, and Embedded Dynamic Random
+Access Memory (eDRAM). Its exact scope is manufacturer-dependent, and on tested platforms it was found to match readings from an external wattmeter [20].
+
+21
+
+2.3.1.2 Accessing RAPL
+RAPL counters can be accessed through four mechanisms [20]:
+• Model-Specific Register (MSR) — Direct register access requiring vendor- and modelspecific knowledge of register offsets and unit conversions. Demands high privileges and is
+the most fragile approach.
+• Linux powercap sysfs interface — Exposes measurements as readable text files, requires
+only directory read access, but does not handle counter overflows internally.
+• perf-events — Lowest read latency, largely handles overflows within the subsystem, and
+requires only the CAP_PERFMON capability. This is the recommended mechanism for most use
+cases.
+• perf-events via Extended Berkeley Packet Filter (eBPF) — Offers no practical performance
+advantage over standard perf-events for straightforward sampling, despite significantly higher
+implementation complexity [20]. However, it becomes highly relevant when energy readings
+need to be coupled with kernel-level scheduling events such as context switches, which is
+important for tools aiming at finer attribution granularity.
+
+2.3.1.3 Intel RAPL
+Intel introduced RAPL with the Sandy Bridge microarchitecture in 2011 [18]. Its accuracy
+has improved substantially across processor generations, with the Haswell generation introducing
+on-chip voltage regulators that enabled actual physical power measurement rather than modelbased estimation, bringing PKG readings to a correlation coefficient of approximately 0.99 against
+wall-socket power [19]. This combination of component-level granularity, sub-millisecond update
+rates, and close correlation with true power draw is what makes RAPL the dominant measurement
+interface in the energy attribution literature. Skylake further improved the temporal resolution of
+the PP0 domain to 50–70 µs updates [19].
+
+2.3.1.4 AMD RAPL
+AMD adopted RAPL with the introduction of the Zen architecture, reading out through different MSRs than Intel but following a broadly similar domain structure [21]. The accuracy of AMD’s
+monitoring mechanisms directly influences processor behaviour, since they underpin frequency selection and power capping decisions [21].
+AMD’s RAPL implementation relies on a model-based approach, similar to Intel’s original Sandy
+Bridge implementation rather than the measurement-based approach Intel introduced with Haswell
+[21]. In terms of domains, AMD exposes only the package and core domains; notably, AMD’s
+core domain provides per-core spatial resolution, whereas Intel’s PP0 reports at the per-package
+level [21]. The update rate is 1 ms [21]. AMD’s RAPL has two important limitations for energy
+attribution:
+• No DRAM domain. DRAM energy consumption is not fully reflected in the package
+domain, meaning total system energy cannot be accurately reconstructed from RAPL readings
+alone on AMD hardware [21].
+• Data-dependent blindness. The model fails to capture variations in power consumption
+caused by the nature of the processed data for data processing workloads: differences measurable externally do not appear in RAPL readings, which affects attribution accuracy [21].
+
+22
+
+2.3.1.5 AMD Application Power Management (Legacy)
+Prior to Zen, AMD processors exposed power data through the Application Power Management
+(APM) interface, which AMD replaced with RAPL starting with the Zen architecture [21]. Unlike
+RAPL’s accumulating energy counters, APM reported the average power consumption over the most
+recent capture window, with a default update rate of approximately 10 ms [17]. This design sidesteps
+the timestamp ambiguity inherent in RAPL’s accumulator approach, though APM suffered from
+significant inaccuracies depending on system configuration particularly related to the CPU [17].
+APM is relevant only for pre-Zen AMD hardware and should not be expected on modern systems.
+
+2.3.2
+
+GPU On-Chip Interfaces
+
+Modern GPUs expose power consumption through vendor-specific software interfaces. NVIDIA
+GPUs provide power readings via the NVIDIA Management Library (NVML), a C-based Application Programming Interface (API) bundled with the GPU driver, while AMD GPUs expose
+equivalent data through ROCm System Management Interface (SMI). Both eliminate the need for
+external instrumentation and provide component-level visibility comparable to CPU-side RAPL
+interfaces. GPU attribution is outside the scope of this thesis; these interfaces are noted here for
+completeness, but the remainder of this work focuses exclusively on CPU and DRAM.
+
+23
+
+CHAPTER 3
+ENERGY-ORIENTED HARDWARE MECHANISMS
+
+This chapter explores the physical and logic-level processor and memory mechanisms that govern
+power usage. We look at static vs. dynamic power, frequency scaling, idle power management,
+simultaneous multithreading, and Non-Uniform Memory Access architecture.
+
+3.1
+
+Static and Dynamic Power
+
+At a general level, the power consumed by a hardware resource can be decomposed into two
+components. Static power is the power drawn at rest — the baseline consumption of a resource
+regardless of whether it is doing any useful work. Dynamic power is the additional power resulting
+from activity on that resource: it arises only when the resource is actively processing or transferring
+data, and scales with the intensity of that activity. The exact mechanisms through which these two
+components manifest depend on the type of resource. In the context of processors, static power
+arises from leakage currents that flow through transistors regardless of any switching activity, while
+dynamic power is the power consumed by actual computation and scales with supply voltage and
+clock frequency [22].
+These two components have fundamentally different implications for power management. Static
+power represents an unavoidable baseline that can only be eliminated by physically cutting power to
+the resource. Dynamic power is workload-dependent and can be reduced by lowering activity or, in
+the case of processors, by lowering the operating voltage and frequency. The hardware mechanisms
+described in the following subsections target one or both of these quantities.
+
+3.2
+
+Frequency and Voltage Scaling
+
+Dynamic Voltage and Frequency Scaling (DVFS) is the hardware mechanism that allows a
+processor to adjust its operating frequency and supply voltage at runtime. DVFS operates at the
+individual core level: each core independently manages its own frequency and voltage. Central
+Processing Unit (CPU) threads running on the same core share its frequency and voltage — there
+is no per-thread frequency setting [22].
+The reason frequency and voltage are adjusted together lies in how transistor circuits operate.
+Reducing voltage slows down the charging and discharging of capacitors within the circuit, which
+in turn limits how fast it can switch reliably — necessitating a corresponding reduction in clock
+frequency to match. Since dynamic power scales quadratically with voltage, this reduction alone
+yields large energy savings; the accompanying frequency reduction amplifies them further, as the
+processor completes fewer operations per unit of time. Raising frequency has the opposite effect:
+
+24
+
+the circuit must switch faster, requiring a higher voltage to do so reliably, resulting in substantially
+greater power draw [22].
+DVFS is used to dynamically adapt power consumption to workload demands in both directions.
+When a core has no computational work to do — for example, while waiting on a memory access or
+an I/O operation — its frequency and voltage can be reduced to save energy, since performance is
+not the bottleneck at that moment. When demand rises again, frequency and voltage are raised to
+restore throughput. Whether doing so is beneficial, however, depends on the nature of the workload:
+for memory-bound applications, raising CPU frequency can increase energy consumption without
+any meaningful performance gain, because execution time is dominated by memory access latency
+rather than computation speed [23].
+In practice, DVFS is not exposed as a continuous dial. Instead, processors define a discrete set
+of validated frequency-voltage pairs called Performance states (P-states), each indexed from zero
+upward and guaranteed to operate correctly. A lower index corresponds to higher frequency, higher
+voltage, and greater throughput at the cost of greater power draw; a higher index corresponds to
+lower frequency and lower voltage. Up to 16 P-states may be defined for a given processor [22]. The
+Advanced Configuration and Power Interface (ACPI) specification [24] standardises this abstraction
+and provides the interface through which the operating system manages processor frequency and
+power states [23]. Historically, P-state selection was the responsibility of the operating system,
+but modern processors have largely delegated this to hardware through Hardware-controlled Performance States, though software override and full disabling of the feature remain possible [22].
+Vendor implementations may carry distinct names in their documentation: Intel’s, for example, is
+documented as Enhanced Intel SpeedStep Technology.
+
+3.3
+
+Dynamic Performance Boosting
+
+P-states define the normal operating frequencies and voltages of a processor core, with P0
+representing the highest performance state. Under favourable thermal and power conditions, the
+processor can opportunistically boost individual core frequencies up to the ceiling defined by P0
+to maximise performance — a mechanism documented as Intel Turbo Boost Technology on Intel processors and Precision Boost on Advanced Micro Devices (AMD) processors. This elevated
+frequency requires a correspondingly higher voltage, raising power draw for the duration of the
+boost, with the additional throughput coming from more instructions being processed per unit of
+time. The processor determines how much of a boost is sustainable by continuously monitoring
+activity and idle states to track available thermal and energy headroom and estimate current power
+consumption. Like P-states, boosting operates at the core level: individual cores can be boosted
+independently, and hardware threads on a boosted core share its elevated frequency. Cores that are
+not being boosted are correspondingly throttled or held at lower P-states to keep total chip power
+dissipation within the chip’s Thermal Design Power (TDP) limit [23, 22].
+
+3.4
+
+Idle Power Management
+
+When a core has no work to do, the processor reduces power by entering an idle state. The
+hardware achieves this through two underlying primitives.
+
+3.4.1
+
+Clock Gating
+
+Clock gating cuts the clock signal to parts of the circuit that are inactive, eliminating dynamic
+power for those blocks. It operates at low cost and with low transition latency, making it well-suited
+to short or intermittent idle periods [22].
+
+25
+
+3.4.2
+
+Power Gating
+
+Power gating goes further, physically cutting the power supply to entire circuit blocks and
+eliminating both static and dynamic power for those blocks. It achieves greater energy savings than
+clock gating, but incurs a larger penalty when entering and exiting the gated state, making it more
+appropriate for sustained periods of inactivity [22].
+
+3.4.3
+
+C-states
+
+Building on these two primitives, the ACPI specification defines processor idle states — referred
+to as C-states — as the abstraction through which the operating system and hardware coordinate
+idle power management. C-states are numbered from zero upward: C0 is the active state in which
+a core is executing instructions, and higher numbers correspond to progressively deeper levels of
+inactivity. Entering a deeper C-state gates more hardware units, trading greater energy savings for
+longer wake-up latency. Hardware vendors may define additional substates beyond those mandated
+by ACPI, and naming conventions vary across vendors [23].
+C-states are managed at two levels. Core C-states control per-core unit gating and are selected
+by the operating system. Although individual hardware threads can each request a desired idle
+level, a C-state is applied to the whole core rather than to individual threads. A core can therefore
+only enter a given C-state when all of its hardware threads have requested at least that level of
+idleness — a single active thread keeps the entire core in a shallower state. Package C-states, which
+operate at the level of the entire processor package, extend this logic to shared chip resources: the
+hardware will only engage deeper package-level gating when all cores have reached a sufficiently deep
+Core C-state, meaning a single active thread anywhere on the chip can prevent the entire package
+from entering deep idle states [22]. Unlike P-states, which the crfullos selects per core, Package
+C-states are managed autonomously by the hardware; the Operating System (OS) influences them
+only indirectly through its Core C-state selections.
+
+3.5
+
+Simultaneous Multithreading
+
+A hardware thread is a complete set of per-thread architectural state — registers, program
+counter, and execution context — maintained directly in hardware within a core. Having this state
+replicated in hardware allows a core to track multiple execution contexts simultaneously without
+software intervention. This is what CPU specifications refer to when listing thread count alongside
+core count: a processor advertised as ”4 cores, 8 threads” has 4 physical cores, each capable of
+maintaining 2 hardware thread contexts. How those contexts are used — whether the core switches
+between them over time or executes them concurrently — is what distinguishes the two forms of
+hardware multithreading.
+The simpler form of multithreading, Temporal Multithreading (TMT), allows a core to host
+multiple hardware threads but issues instructions from only one of them per cycle. Simultaneous
+Multithreading (SMT) — documented by Intel as Hyper-Threading Technology — goes further:
+it issues instructions from multiple hardware threads within the same cycle, filling execution units
+that would otherwise sit idle. The primary motivation is improved CPU utilisation: when one
+thread stalls waiting on a memory access, instructions from another thread can occupy the available
+resources rather than leaving them unused [25]. From the operating system’s perspective, this makes
+a processor with N physical cores appear as 2N logical cores [23]. Because both hardware threads
+run on the same physical core, they share its frequency, voltage, and execution resources — SMT
+provides no per-thread frequency setting. The throughput benefit holds only when threads are
+not competing too heavily for shared resources such as caches; heavy contention can negate the
+advantage entirely [25].
+
+26
+
+While SMT is a performance mechanism rather than an energy management one, it has direct
+implications for energy consumption through two effects. First, execution units that would otherwise
+be clock-gated during idle periods are kept active by instructions from the second thread, reducing or
+eliminating the savings that clock gating would otherwise provide. Second, some internal buffers and
+queues must be enlarged to hold in-flight instructions from two threads simultaneously, increasing
+static power consumption independent of utilisation [26]. Together, these effects mean that enabling
+SMT consistently increases power draw, making it effectively a trade-off between performance and
+energy consumption. As a concrete illustration, concurrent execution under SMT has been shown to
+increase total energy usage by approximately 15% compared to single-threaded execution, while still
+consuming less energy than distributing the same work across two separate physical cores [27]. In
+cases where the performance gain is modest, enabling SMT can increase total energy consumption
+by up to 21% compared to running with it disabled [23].
+
+3.6
+
+Non-Uniform Memory Access
+
+The preceding mechanisms govern energy consumption on the processor side. Memory introduces its own set of energy characteristics, shaped both by how Dynamic Random Access Memory
+(DRAM) behaves as a component and by how memory is physically organised across the system.
+
+3.6.1
+
+Architecture and Performance Characteristics
+
+Non-Uniform Memory Access (NUMA) is a memory architecture in which the latency and available bandwidth of a memory access depend on the physical location of the target memory relative to
+the requesting processor. In systems where memory is distributed across multiple sockets, accesses
+to different memory regions traverse paths of different lengths and may cross shared interconnects,
+resulting in measurably different performance characteristics [28].
+
+Figure 3.1: Two-NUMA-node system diagram
+In a typical multi-socket server, each CPU socket has its own directly attached DRAM, and the
+system is partitioned into NUMA nodes accordingly — each node consisting of a processor socket
+and the memory physically connected to it, as illustrated in Figure 3.1. Accessing memory within
+the local node is handled by the local memory controller without crossing any shared interconnect,
+and is therefore faster. Accessing memory on a remote node requires traversing the inter-socket
+
+27
+
+interconnect, introducing additional latency and subjecting that link — and the remote memory
+controller — to contention from concurrent accesses, resulting in measurable degradation in both
+latency and throughput [28].
+NUMA placement refers to the policy that governs which NUMA node a given memory allocation is assigned to. Since all memory within a node presents the same access characteristics to
+a local processor, placing allocations on the node closest to the processor that will use them minimises latency and avoids interconnect contention. Poor placement forces frequent remote accesses,
+increasing latency and reducing the effective memory bandwidth available to the workload [28].
+
+3.6.2
+
+Energy Characteristics of Memory in Multi-Socket Systems
+
+DRAM power consumption has two components. The first is a relatively stable background
+component arising from operations that occur independently of access activity — most notably the
+periodic refresh cycles required to preserve stored data. At moderate access rates, this background
+component dominates and overall power consumption remains broadly stable, regardless of how
+much of the installed memory capacity is in use. Under heavy memory activity, as in memoryintensive workloads, the dynamic component driven by actual read and write operations becomes
+significant and raises overall consumption accordingly [29].
+The NUMA topology introduces a second energy dimension. Remote memory accesses incur not
+only a performance penalty but also an energy penalty: traversing the inter-socket interconnect and
+engaging a remote memory controller consumes more energy than a local access handled entirely
+within the same node [30, 31]. NUMA placement therefore has a direct effect on energy efficiency
+— local-node allocation minimises both latency and energy cost per access, while poor placement
+increases both.
+The mechanisms covered in this section collectively shape the energy profile of a running system.
+On the processor side, DVFS and P-states provide the primary levers for active power management,
+continuously adjusting per-core voltage and frequency in response to workload demand, while Cstates allow individual cores — and the processor package as a whole — to shed power during
+idle periods. Dynamic performance boosting introduces a third operating regime above the normal baseline, trading higher instantaneous power for greater throughput when thermal conditions
+permit. Simultaneous Multithreading, while primarily a performance feature, reshapes the energy
+picture by keeping execution units active that would otherwise be clock-gated, consistently raising
+power draw independent of any explicit power management setting. On the memory side, NUMA
+topology introduces access-cost asymmetry that affects not only latency and bandwidth but also
+energy: remote memory accesses consume more energy than local ones, and the fixed power draw
+of DRAM means that how bandwidth is used — rather than how much memory is occupied —
+determines memory energy efficiency. With both the measurement interfaces and the hardware
+mechanisms that shape their readings now established, the following section examines what makes
+attributing those readings to individual software entities structurally difficult.
+
+28
+
+CHAPTER 4
+CHALLENGES IN SOFTWARE ENERGY ATTRIBUTION
+
+This chapter details the fundamental limits and practical complexities of software-level energy
+attribution, concluding with a review of the operating system tools and kernel interfaces used to
+observe application behaviour.
+
+4.1
+
+The Fundamental Attribution Gap
+
+The starting point for every challenge in this space is a basic asymmetry: hardware energy
+meters report aggregate consumption at the component level, while the question being asked —
+how much did this process consume? — is at the software entity level. As established in Chapter 2,
+Running Average Power Limit (RAPL) exposes readings per Central Processing Unit (CPU) package
+and per Dynamic Random Access Memory (DRAM) domain [27]. It does not report per-core, perthread, or per-process consumption. On a system running dozens of concurrent processes, RAPL
+answers ”how much did this socket consume?” but not ”by whom?” [32].
+Bridging this gap requires constructing an indirect model: observe how each software entity
+uses hardware resources, and use those observations as a basis for partitioning the measured total.
+This makes attribution inherently a modelling problem rather than a measurement problem — and
+it means that every attribution result carries the assumptions and limitations of the model used to
+produce it [27]. There is no ground truth at the per-process level against which a model can be
+directly validated; the only available check is whether the per-entity attributions sum back to the
+measured component total [33, 32]. This validation by summation confirms aggregate consistency
+but cannot verify that energy has been correctly distributed among individual entities.
+
+4.2
+
+Hardware Complexity and Variability
+
+The hardware is not a stable, predictable environment. Processors continuously adjust their
+operating frequency and voltage, enter and exit idle power states, share execution resources across
+threads, and impose topology-dependent costs on memory accesses — and each of these behaviours
+changes the relationship between observable software activity and actual energy consumption in
+ways that a naive attribution model will not capture.
+A first dimension of this complexity is heterogeneity. Hardware varies enormously across vendors, generations, and configurations, and energy behaviour is deeply coupled to those specifics. A
+model that accurately captures energy consumption on one platform carries no guarantee of correctness on another — not even across nominally identical devices, where measurable variation in power
+consumption has been observed between units of the same hardware model [34, 27]. This makes
+
+29
+
+generalisation structurally difficult: any attribution approach is, to some degree, platform-specific
+[35].
+A second dimension is availability. The interfaces and counters that attribution tools depend on
+— such as hardware performance counters or RAPL domains — are not uniformly present across
+hardware and kernel versions. What is exposed on one architecture may be absent or differently
+scoped on another, meaning that a model designed around a particular set of observables may have
+no equivalent data source on a different platform [27]. Where counters are available, hardware constraints on how many can be active simultaneously introduce a further limitation: when more events
+are requested than physical registers allow, the kernel must multiplex them over time, introducing
+sampling error into the very metrics the model relies on [32].
+A third dimension is runtime variability. At any given moment, the state of the system can differ
+significantly from one measurement interval to the next. Dynamic power management mechanisms
+continuously adjust operating conditions at the core level — varying frequency, voltage, and idle
+depth — in response to workload demand, making the energy cost of the same observable activity
+non-constant over time. Parallel execution introduces additional variability: two threads running
+simultaneously on the same core produce a different energy profile than the same two threads
+running in sequence, independent of any explicit power management activity. The result is that
+even under controlled conditions, the relationship between a software entity’s observable resource
+usage and its actual energy contribution is unstable across time and across runs [35].
+
+4.3
+
+Attribution Ambiguity
+
+Given a hardware energy reading, the problem of partitioning it among concurrent software
+entities is not merely a matter of finding the right proxy metric — it is structurally ambiguous in
+several ways that no choice of proxy fully resolves.
+A first source of ambiguity is workload diversity. Workloads differ significantly in how they
+interact with hardware — in their instruction mix, memory access patterns, I/O behaviour, and
+degree of parallelism — and the energy interfaces available do not always offer the granularity
+needed to capture these differences. The result is that the same observable metric can correspond
+to very different actual energy expenditures depending on what the workload is doing, making any
+single attribution proxy unreliable across a heterogeneous mix of software [32].
+A second source is shared resource ownership. Hardware resources are used concurrently by
+multiple software entities, and the energy they consume has no clear owner. More fundamentally,
+a software entity’s energy footprint is not an intrinsic property — it is shaped by the behaviour of
+everything else running alongside it, making attribution inherently a joint rather than independent
+accounting problem [32]. Some of these dependencies are indirect, such as cache contention causing
+one workload to increase another’s memory energy cost; others are structural, such as shared address
+spaces with no unambiguous ownership, or memory operations that are decoupled from the thread
+that initiated them due to cache write-back for example [33, 27].
+A third source is the interaction between co-running software entities. The energy behaviour
+of a system running software in isolation differs substantially from one running the same software
+alongside competing workloads. In multi-tenant environments in particular, collocated workloads
+influence the host’s total energy reading, and the side-effects of that contention — on frequency,
+on resource availability, on memory locality — are difficult to disentangle from each entity’s own
+contribution [33].
+Finally, validation itself is structurally limited. The only practical check available to an attribution model is that per-entity attributions sum back to the measured component total — but
+satisfying this constraint says nothing about whether energy has been correctly distributed among
+individual entities. This aggregate consistency can mask significant per-process inaccuracies, a
+problem that has been demonstrated concretely in practice [36].
+
+30
+
+4.4
+
+Practical and Systemic Constraints
+
+Beyond the hardware and attribution challenges above, a set of practical constraints shapes
+what any real attribution tool can actually observe and how faithfully it can report.
+A first constraint is the system itself. The operating system and its runtime activity — scheduling, background processes, managed runtime overhead — are not passive observers; they consume
+energy and continuously alter the conditions under which software runs. This activity cannot always
+be cleanly separated from the software under test, and the system’s own management decisions,
+such as migrating a thread between cores with different energy profiles, introduce variability into
+the very signal the tool is trying to capture [34, 35].
+A second constraint is the tool’s own footprint. Any attribution tool consumes resources in
+the act of observing, and beyond a certain point that overhead begins to perturb the energy measurements it is trying to produce [35, 27]. For polling-based approaches, this manifests as a direct
+tension between sampling frequency and measurement fidelity. Supporting virtualised environments
+adds a further layer of complexity: energy-related hardware state is generally not propagated into
+guest environments, forcing tools to either work around this opacity or treat virtualised workloads
+as black boxes [33].
+Software energy attribution is hard for reasons that are not incidental — they are structural. The
+hardware provides energy readings at the wrong granularity; its own dynamic behaviour, already
+described in Chapter 3, breaks the linear assumptions that simple attribution models rely on; the act
+of dividing a shared resource among concurrent entities is ambiguous in ways that no single proxy
+metric resolves; and the tools built to perform attribution must operate within an environment
+that interferes with, perturbs, and obscures the signal they are trying to capture. Appreciating
+the full weight of these challenges is essential for evaluating the trade-offs made by existing tools
+and for understanding why finer-grained, more accurate attribution remains an active research
+problem. Before turning to those tools, Chapter 5 introduces the system-level interfaces and kernel
+abstractions they are built upon.
+
+31
+
+CHAPTER 5
+ENERGY ATTRIBUTION TOOLS AND INTERFACES
+
+The measurement interfaces and hardware mechanisms described in the preceding chapters
+establish what the hardware makes observable and at what granularity. What connects those observations to individual software entities is a set of system-level interfaces and abstractions that
+attribution tools use to instrument the kernel, query per-process activity, and map kernel-visible
+identifiers to higher-level entities such as containers and virtual machines. This chapter introduces
+the five principal mechanisms that form this observability infrastructure: Extended Berkeley Packet
+Filter (eBPF) as a kernel instrumentation framework enabling fine-grained, event-driven observation; hardware performance counters as a source of per-core activity metrics; the /proc filesystem
+as the primary interface for per-process resource usage; Linux control groups as the mechanism
+for mapping threads to containers; and Libvirt as the equivalent mapping layer for virtualised
+environments.
+
+5.1
+
+eBPF
+
+eBPF is a kernel technology that allows user-space programs to load small, sandboxed programs
+into the Linux kernel, where they execute in response to kernel or application events [37]. The name
+is a historical artifact — the original Berkeley Packet Filter was a mechanism for filtering network
+packets, and eBPF began as an extension of it — but the technology has since been generalised
+into a full-purpose kernel instrumentation and observability framework. eBPF is now a standard
+component of Linux observability tooling, used in networking, security monitoring, and, increasingly,
+energy attribution.
+
+5.1.1
+
+Hook Points
+
+eBPF programs are event-driven: they attach to hook points and execute when the associated
+event fires [37]. Pre-defined hook types include tracepoints (stable, versioned instrumentation points
+embedded in the kernel source), kprobes (dynamic attachment to arbitrary kernel functions), uprobes (dynamic attachment to user-space functions), system call entry and exit, and network events.
+If no suitable pre-defined hook exists, kprobes and uprobes allow attachment at almost any point in
+kernel or user-space code. The placement and relationships of these hooks are shown in Figure 5.2,
+while the general compilation and verification ecosystem is sketched in Figure 5.1.
+
+32
+
+Figure 5.1: eBPF ecosystem overview
+
+5.1.2
+
+Maps
+
+eBPF maps are typed key-value stores residing in kernel memory that serve as the shared data
+structure between eBPF programs and user space [37]. Common map types include hash maps for
+arbitrary key-value associations, per-CPU arrays for maintaining per-core counters without locking,
+ring buffers for efficiently streaming events to user space, and perf event arrays for passing perf event
+file descriptors into eBPF programs. Data accumulated by eBPF programs — for instance, Central
+Processing Unit (CPU) time per Process Identifier (PID) or cycle counts per scheduling interval —
+is written to maps and consumed asynchronously by a user-space agent.
+
+5.1.3
+
+Verifier and Safety
+
+Before any eBPF program executes, the kernel verifier statically analyses it to guarantee that it
+cannot crash the kernel, loop infinitely, access arbitrary memory, or otherwise compromise system
+integrity [37]. The verifier enforces memory bounds, restricts callable kernel functions, limits stack
+size, and requires that all code paths terminate. This safety guarantee is what makes eBPF practical
+to deploy in production; it also imposes real design constraints on attribution tools, since certain
+patterns — unbounded loops, large stack allocations, or calls to non-whitelisted kernel functions —
+are rejected by the verifier regardless of intent.
+
+5.2
+
+Hardware Performance Counters
+
+Modern processors expose a set of programmable hardware counters, managed collectively
+by the Performance Monitoring Unit (PMU), that count low-level architectural events on each
+core: instructions retired, cache misses, branch mispredictions, memory operations, and many
+others. These performance monitoring counters are accessible from user space primarily via the
+perf_event_open(2) system call [38], which provides a unified interface to both hardware performance monitoring counters and software event counters maintained by the kernel. Higher-level tools
+— perf, PAPI, LIKWID — build on top of this interface and expose counter data to applications
+and users.
+A practical constraint shapes how performance counters are used in practice. A processor core
+has only a small number of physical counter registers — typically four to eight — while the number of
+events that can in principle be counted is far larger. When more events are requested than physical
+
+33
+
+Figure 5.2: eBPF hook points in the Linux kernel
+registers allow, the kernel rotates which events are tracked across successive intervals and scales
+up the partial counts to estimate what the full-interval total would have been. This introduces
+sampling error whose magnitude depends on how rapidly the mix of events changes within each
+multiplexing window.
+Two fixed Model-Specific Register counters are worth specific attention in the energy attribution
+context. Maximum Performance Register (MPERF) counts reference cycles at a fixed nominal
+frequency, while Actual Performance Register (APERF) counts actual cycles at whatever frequency
+the core is currently running. Their ratio gives the effective per-core frequency scaling factor at any
+given moment, without requiring any query to the operating system or firmware.
+
+5.3
+
+The /proc Filesystem
+
+The /proc filesystem is a virtual filesystem maintained by the Linux kernel that exposes process
+and system state as a navigable tree of pseudo-files readable from user space [39]. For energy
+attribution tools, three categories of files are relevant:
+• Per-process CPU accounting is exposed through /proc/[pid]/stat and /proc/[pid]
+/task/[tid]/stat, which report the cumulative CPU time — separately in user mode and
+kernel mode — accumulated by a given process or Thread Identifier (TID) since it started
+[39]. Differencing successive readings of these files across a polling interval yields the CPU
+time consumed by each thread during that window. This is the basis on which polling-based
+attribution tools such as Scaphandre compute per-process CPU fractions for proportional
+energy partitioning.
+• Process identity and hierarchy are available through /proc/[pid]/status and /proc/
+[pid]/cmdline, which provide the command name, parent PID, and thread group of a given
+process, allowing a tool to associate per-thread measurements with human-readable process
+names and to aggregate thread-level measurements to the process level.
+• Container and cgroup linkage is exposed through /proc/[pid]/cgroup, which lists
+the control group hierarchy memberships of a given process [39]. This is the file through
+
+34
+
+which attribution tools resolve a kernel-visible PID to the container or orchestration entity
+it belongs to, as described in Section 5.4.
+
+5.4
+
+Control Groups
+
+Linux control groups (cgroups) are a kernel facility that organises processes into a hierarchical
+tree and allows resource limits and accounting to be applied to each node of the hierarchy as a unit
+[40]. From an energy attribution perspective, the key fact about cgroups is that container runtimes
+use them as their implementation substrate: when Docker, containerd, or any other OCI-compliant
+runtime creates a container, it creates a corresponding cgroup and places the container’s processes
+into it. Kubernetes pods are similarly mapped to cgroup subtrees, with the cgroup path encoding
+the pod’s unique identifier and container name.
+This hierarchy makes container-level energy aggregation tractable: a tool that has obtained a
+per-thread or per-process energy estimate can read /proc/[pid]/cgroup to determine which cgroup
+— and therefore which container or pod — that thread belongs to, and aggregate accordingly. In
+Kubernetes environments, the cgroup path typically contains sufficient information to identify the
+pod, and the Kubelet Application Programming Interface (API) can be queried to resolve it to full
+Kubernetes metadata including namespace, deployment, and labels.
+
+5.5
+
+Libvirt
+
+Libvirt is an open-source virtualisation management library and application programming interface that provides a unified interface to a range of hypervisors including Kernel-based Virtual
+Machine (KVM), Xen, and Quick Emulator (QEMU) [41]. It abstracts each Virtual Machine (VM)
+as a domain with a stable domain identifier and exposes a consistent programmatic interface regardless of the underlying hypervisor.
+From the host operating system’s perspective, a VM running under KVM appears as a QEMU
+process — its threads are visible in the host’s process table alongside any other host process. Libvirt
+domain identifiers provide the mapping from these host-visible QEMU processes to the virtual
+machines they represent. An attribution tool that has computed per-process energy estimates on
+the host can use this mapping to aggregate those estimates up to the VM level, enabling perVM energy accounting in exactly the same way that cgroup membership enables per-container
+accounting.
+The five mechanisms described in this section operate at different layers of the system stack
+and serve complementary roles in the attribution pipeline. eBPF provides the instrumentation substrate for event-driven, fine-grained observation at the kernel level. Hardware performance counters,
+and the APERF/MPERF pair in particular, supply the per-core activity metrics and effective frequency information that Dynamic Voltage and Frequency Scaling (DVFS)-aware attribution models require to move beyond simple CPU-time proportionality. The /proc filesystem provides the
+polling-accessible counterpart: a window into per-process state, exposing CPU time, identity, and
+cgroup membership for any running process. Cgroups and Libvirt then serve as the identity layers for those higher-level entities — one for containerised workloads, the other for virtualised ones
+— translating process-level measurements into the deployment-relevant abstractions that operators
+and schedulers reason about. With this infrastructure established, the following chapter examines
+how existing tools and approaches in the literature have built upon it to tackle the attribution
+problem in practice.
+
+35
+
+Part II
+State of Art
+
+36
+
+CHAPTER 6
+INTRODUCTION
+
+Energy attribution — the problem of determining how much energy a running software entity
+consumes — has become a central concern in modern computing infrastructure. As datacenters
+grow in scale and sustainability commitments tighten, the ability to measure, audit, and optimize
+energy consumption at the granularity of individual processes and threads is increasingly necessary.
+This section reviews the existing literature on fine-grained Central Processing Unit (CPU) energy
+attribution in Linux, focusing specifically on CPU and Dynamic Random Access Memory (DRAM)
+as the primary attribution targets.
+The scope of this review is intentionally bounded. While a full server node draws power across
+many subsystems, CPU and DRAM together account for a disproportionate share of node energy
+consumption — more than 30% even in Graphics Processing Unit (GPU)-heavy workloads [42, 13].
+Beyond raw share, a non-negligible portion of datacenter power is tied directly to CPU activity
+[43], and the CPU is the most dynamically complex component in terms of energy behavior: it
+operates across a range of voltage and frequency states, enters and exits multiple idle depths within
+microseconds, and exhibits fundamentally different power characteristics depending on whether
+cores are executing independently or sharing physical resources. These properties make the CPU
+both the most important and the most difficult target for fine-grained attribution.
+The review covers work that attributes energy based on real, observable system characteristics — Hardware Performance Counter (HwPC), scheduling events, Running Average Power Limit
+(RAPL) readings, and memory footprint — rather than work oriented toward stable worst-case or
+game-theoretic allocations. Within this scope, the reviewed literature divides naturally into two
+attribution goals: approaches that aim for a consistent, reproducible value per entity independent
+of co-running workloads, and approaches that aim to reflect what is actually happening on the live
+system. The remainder of this part proceeds as follows: Chapter 7 characterizes both attribution
+goals and identifies the one that motivates the bulk of the reviewed work. Chapter 8 surveys the
+key research within that goal, organized by approach type. Chapter 9 synthesizes the findings in a
+comparative table, and Chapter 10 and the final chapter identify the central open gap and conclude
+the thesis.
+
+37
+
+CHAPTER 7
+ENERGY ATTRIBUTION GOALS
+
+A foundational distinction runs through the reviewed literature, one that Cadorel and Saingre
+[44] make explicit through their formal treatment of power division: attribution methods differ not
+only in their technical mechanisms but in what they are fundamentally trying to achieve. Using the
+conceptual framework that paper introduces, the reviewed works can be organized into two camps.
+Some produce an attribution that is stable — consistent and reproducible regardless of what else is
+co-running on the same machine. Others produce an attribution that is context-dependent — one
+that shifts as the surrounding system state changes, and deliberately so. The first goal is examined
+briefly in Section 7.1; the second is the framing adopted by the majority of the reviewed literature
+and is the focus of the rest of this chapter.
+
+7.1
+
+Stable Attribution
+
+A stable attribution method assigns a consistent energy value to a software entity — one that
+does not fluctuate as co-runners appear or disappear on the same machine. This property is meaningful for software energy optimization, where a developer comparing two versions of the same code
+needs confidence that differences in attribution reflect differences in the code rather than differences
+in the surrounding execution context. Two examples from the reviewed literature realize this goal
+in different ways: an isolation-based worst-case estimation approach and a game-theoretic fair-share
+method.
+CINERGY [45] approaches stability by stepping back from the live system entirely. Rather than
+using fine-grained hardware metrics as a proxy for process-level work, it uses a more abstract input
+— Central Processing Unit (CPU) usage — to build a polynomial regression model that estimates
+the Worst-Case Power Consumption (WCPC) a Virtual Machine (VM) would draw running in
+isolation, without any energy-efficiency gains from workload consolidation. The resulting estimate
+is stable by construction: because it ignores the system context entirely, it cannot be perturbed by
+changes in the surrounding execution environment.
+Shapley-based methods approach stable attribution from a different direction, drawing on Cooperative Game Theory to define what a fair attribution should look like across all possible co-runner
+combinations. In the Shapley framing, each process is a player in a cooperative game, and the total
+energy consumed during a time interval is the value to be divided. A coalition is any subset of the
+active processes that could run together, and the value of a coalition is the energy the system would
+consume if only its members were running. The marginal contribution of a player to a coalition
+is the additional energy consumed by the system when that player joins — that is, the difference
+between the coalition’s energy with the player and without it. The Shapley value then assigns each
+player a share equal to its average marginal contribution, averaged over all possible orderings in
+
+38
+
+which the full set of players could be assembled one by one from the empty set. Formally, for a set
+of players N and characteristic function v that provides the value of a coalition:
+φi (v) =
+
+X
+
+v(S ∪ {i}) − v(S)
+
+S⊆N \{i}
+
+|
+(|N | − |S|) |N
+|S|
+
+
+
+(7.1)
+
+This value is uniquely characterized by four fairness axioms it simultaneously satisfies: efficiency
+(all attributions sum to the total measured energy), symmetry (two processes with identical marginal
+contributions in every coalition receive equal attribution), the null player property (a process that
+adds no energy in any coalition receives zero), and additivity (attribution across two consecutive
+intervals equals attribution over their union). While the primary objective here is optimization, these
+axioms also position the Shapley value as a theoretically principled basis for tenant billing, since
+they guarantee that charges are consistent, reflect actual contribution, and cannot be manipulated
+by changing the order of attribution. The core practical obstacle is that computing the Shapley
+value exactly requires knowing the energy of every possible coalition, and the number of coalitions
+grows exponentially with the number of processes — a set of n processes yields 2n coalitions. The
+two reviewed works each propose a different strategy to address this.
+Dong et al. [46] apply the Shapley method to attribute energy to applications in a mobile system,
+where the goal is to identify which application is the top energy consumer and to support energy
+management decisions. The authors tackle the 2n tractability problem through three complementary
+techniques. First, they shorten the measurement interval to as little as 10 ms: in a sufficiently short
+window, fewer processes are simultaneously active, which directly reduces the number of distinct
+coalitions that need to be evaluated. Second, since not all coalitions will be observed in any finite
+run, missing coalition values are estimated through a recursive bootstrapping procedure — initial
+Shapley shares are used to fill in unobserved coalition energies, the resulting complete table is used
+to recompute shares, and the procedure iterates until convergence. Third, they introduce M-games,
+a reduced game formulation in which only coalitions up to a maximum size m are considered,
+rather than all 2n subsets; this limits the number of required measurements to a tractable set
+while still satisfying the Shapley axioms on the restricted game. The combined result is a practical
+approximation of the Shapley value that can be computed from measurements collected passively
+as the system runs.
+Jiang et al. [47] apply the Shapley framework to VM-level power attribution on a physical
+server, targeting the problem of fair tenant billing in virtualized datacenters. The exponential
+coalition space is made tractable through Virtual Homogeneous Coalition: rather than treating each
+individual VM as a distinct player, VMs of the same configuration type — defined by their vCPU
+count and memory allocation — are grouped together, and the game is played over types rather
+than instances. In a typical datacenter where VMs come in a small number of fixed configuration
+templates (e.g., at most five instance types in Amazon EC2), this reduces the coalition space from 2n
+individual VMs to 2r type combinations, where r is the number of distinct types. For each coalition
+of types, power is approximated using a linear model fitted to measurements collected during an
+offline campaign with a physical external power meter; the Shapley calculation is then performed on
+these approximated values at runtime at 1 Hz. The fairness axioms directly support the billing use
+case: since the Shapley value guarantees efficiency and symmetry, tenants with identical workloads
+are charged equally, and the sum of all charges equals the measured power of the physical machine.
+These two examples illustrate that stable attribution is achievable, but through mechanisms that
+are deliberately decoupled from the live system state. The rest of this review turns to the larger
+body of work that takes the opposite approach — treating context-dependence not as a problem to
+be eliminated, but as the defining feature of a useful attribution.
+
+39
+
+7.2
+
+Context-Dependent Attribution
+
+Where stable attribution deliberately abstracts away the transient state of the system, contextdependent attribution takes the opposite stance: the attributed energy of a process or container
+should reflect what the hardware is actually doing at the moment of measurement. Power consumption on a modern server is not static — it varies continuously with workload intensity, CPU
+frequency, idle state transitions, and interference from co-running tenants. A context-dependent
+method tracks all of this, producing attribution values that change as the system state changes.
+This goal is motivated by several concrete use cases. Energy-aware process and container
+scheduling requires that a scheduler can observe, at runtime, how much energy each running process
+is actually drawing, so that placement and migration decisions can be informed by real consumption rather than estimates [48]. A concrete illustration of this need is EC6 [49], which improves
+energy efficiency in Kubernetes by dynamically migrating idle containers to a reserved core so that
+the remaining cores can sustain deep C-state residency — a scheduling decision that presupposes
+knowledge of which containers are drawing power and why. Energy-based billing similarly requires
+that a tenant’s attributed share of node energy reflects their actual resource consumption over a
+billing period, not a conservative envelope [44].
+All work reviewed from this point onward pursues context-dependent attribution. Within this
+goal, the reviewed literature divides into two methodological families. Model-based approaches
+learn the relationship between hardware signals and power consumption from training data, and
+use the resulting model to estimate and distribute energy at runtime. Formula-based approaches
+instead derive attribution analytically from hardware semantics, applying fixed formulas grounded
+in documented hardware behavior. The following chapter examines each family in turn.
+
+40
+
+CHAPTER 8
+KEY RESEARCH IN ENERGY ATTRIBUTION
+
+All work reviewed from this point targets context-dependent attribution — attribution that
+reflects the live state of the system, shifting as hardware and workload conditions change. Within
+this goal, the reviewed literature divides along a further axis: whether attribution is driven by a
+learned model or by an analytical formula derived from hardware semantics. This section covers
+both in turn.
+
+8.1
+
+Model-Based Approaches
+
+Approximately 11 of the reviewed works use a model-based approach, compared to roughly 8
+that rely on a formula-based one — making model-based methods the plurality in the literature.
+This prevalence reflects the inherent flexibility of learned models: rather than requiring the developer to analytically enumerate every hardware effect, a model can learn complex, non-linear
+relationships between observable signals and actual power consumption from empirical data. Hardware Performance Counter (HwPC)s are the dominant input choice across these works, directly
+reflecting what is happening on the processor — instruction throughput, cache pressure, memory
+access patterns, branch behavior — offering a far more informative view of hardware activity than
+coarse Operating System (OS)-level metrics such as Central Processing Unit (CPU) utilization [50].
+Looking across this body of work, three recurring limitations can be identified: whether a model
+trained on one hardware configuration transfers to another (hardware generalizability); whether
+the deployment mechanism is practical at fleet scale (deployability); and whether the model degrades silently when production workloads shift away from those seen at training time (workload
+generalizability).
+A first group of works either overlooks these limitations or addresses them only through full
+retraining from scratch. Bader et al. [51] train an `1 -regularized regression model correlating perprocess Extended Berkeley Packet Filter (eBPF) metrics against an external smart meter, trained
+and evaluated on a single node with no cross-system validation and no transfer mechanism. The
+iteration of Kepler detailed in Amaral et al. [52] trains frequency-range regression models normalized against real-time Running Average Power Limit (RAPL) readings for bare-metal nodes,
+but distributes pre-trained models — fitted on a specific Intel Xeon E5-2667 v3 — for deployment
+environments where hardware power access is unavailable, and applies them to arbitrary target
+hardware without retraining [53]. BitWatts [54] builds per-core polynomial regression models per
+CPU frequency range using two fixed HwPC — unhalted cycles and reference cycles — against an
+external PowerSpy meter, requiring a full learning phase per node. WattsApp [55] trains a separate neural network per container over resource utilization statistics using a WattsUp USB meter
+as the oracle, with no cross-system validation and no retraining automation — meaning the per-
+
+41
+
+container training burden compounds directly with deployment scale. In each case, the mechanism
+for handling new hardware is either absent or requires a full manual retraining campaign, making
+large-scale fleet deployment impractical.
+WattsKit [56] represents a meaningful step forward on both hardware generalizability and
+deployability. Rather than fixing a set of HwPC in advance, WattsKit selects them dynamically
+through a structured learning phase: representative benchmarks are executed on the target node, all
+available HwPC candidates are sampled briefly, and those whose Pearson correlation with measured
+power falls below a threshold are discarded before any full-length training run takes place [56]. Full
+training runs are then performed using only the retained counters, with the final model built from
+the hardest-to-model benchmarks on the rationale that generalization on difficult cases implies
+generalization on easier ones. The counter combination yielding the lowest regression error on heldout benchmarks is selected. Because counter selection is determined entirely by measured correlation
+on the target machine, the approach makes no prior assumptions about CPU architecture, and the
+model structure explicitly accounts for Dynamic Voltage and Frequency Scaling (DVFS), C-states,
+Simultaneous Multithreading (SMT), and TurboBoost. WattsKit achieves an average error of 1.35%
+(1.60 W) on an Intel Xeon W3520.
+
+Figure 8.1: WattsKit architecture-agnostic training pipeline
+As illustrated in Figure 8.1, the pipeline proceeds from benchmark injection on the host, through
+HwPC collection and correlation-based filtering, to the construction of the final power model. However, the learning phase is performed once at node setup time, using a fixed set of training benchmarks. If production workloads diverge from those benchmarks in the type of hardware activity
+they generate — not merely in load level — the model’s counter selection may no longer be optimal
+for the live environment. WattsKit thus advances the state of the art on hardware generalizability
+and deployability, but leaves workload generalizability as the unresolved dimension.
+SmartWatts [57] eliminates the offline calibration phase entirely, replacing it with an online
+self-calibrating mechanism that continuously adapts its power models to the machine and workload
+at hand.
+The architecture of SmartWatts, illustrated in Figure 8.2, is organized around two principal
+components: a lightweight sensor deployed on each monitored node, and a centralized power meter
+service. As shown in Figure 8.3, sensors run directly on each node and report samples to a MongoDB
+backend; the power meter, which can be deployed on a designated master node, consumes these
+samples and produces power estimations for all monitored entities. This decoupled design means
+that the computationally heavier modeling work does not run on the monitored nodes themselves.
+The modeling approach decomposes Running Average Power Limit (RAPL) power for each resource — CPU package and Dynamic Random Access Memory (DRAM) — into a static component
+and a dynamic component. The static component is isolated during a quiet phase after boot using a
+running median with interquartile range filtering. The dynamic component is modeled per operating frequency: SmartWatts computes a per-sample average frequency using the Actual Performance
+
+42
+
+Figure 8.2: SmartWatts self-calibrating architecture overview
+
+Figure 8.3: SmartWatts cluster deployment diagram
+Register (APERF)/Maximum Performance Register (MPERF) Model-Specific Register (MSR) ratio and bins samples into frequency layers accordingly. Within each layer, a Ridge regression model
+is trained on the accumulated samples, correlating observed dynamic power against a set of HwPC
+events. This frequency-specific decomposition means that DVFS effects, Turbo Boost, and C-states
+are naturally absorbed into the layer structure: a core whose effective frequency drops due to C-state
+transitions registers a lower APERF/MPERF ratio and lands in the appropriate low-frequency layer
+rather than distorting a single global model. HwPC selection is performed at runtime: during an
+initial event selection phase, all available HwPC events are monitored simultaneously — up to the
+limit the host’s Performance Monitoring Unit (PMU) supports without multiplexing — and each
+event’s Pearson correlation against RAPL is computed. Events exceeding a correlation threshold
+are retained as model inputs. Container and process-level attribution is performed by applying the
+learned model to each cgroup’s own HwPC readings, then capping the summed estimates to the
+actual measured RAPL dynamic energy. SmartWatts achieves a mean estimation error of 3.3 W
+for the CPU package and 0.6 W for DRAM, with a sensor overhead of 1.2 W for the package and
+0.06 W for DRAM at 2 Hz.
+On hardware generalizability and deployability, SmartWatts is a genuine advance: no offline
+calibration phase is required, HwPC selection adapts to whatever events the host machine exposes,
+and the tool can be deployed on any machine with RAPL support and Linux perf events without
+
+43
+
+node-specific configuration. The remaining limitation is structural. HwPC selection is fixed at the
+end of the initial event selection phase, which runs for a configurable window of 30 ticks on whatever
+workload happens to be active at sensor startup. If the production workload subsequently shifts in
+type, the elected counters may no longer be the most informative ones, and the model will continue
+using a selection optimized for a context that no longer holds.
+SelfWatts [58] builds directly on SmartWatts’ frequency-specific modeling architecture and
+targets precisely this remaining limitation. Where SmartWatts fixes its HwPC selection after an
+initial calibration window, SelfWatts replaces this static selection with a continuous, feedback-driven
+Recursive Feature Elimination (RFE) loop that revises the active counter set at runtime based on
+observed model accuracy — with no offline calibration phase at any point.
+The architecture of SelfWatts, shown in Figure 8.4, distributes its components across the infrastructure: a Sensor and Controller pair runs on each monitored host, while the Formula component
+— responsible for model inference and power estimation — can run either co-located on the same
+host or remotely in the PowerAPI backend alongside a Time-Series Database (TSDB), as illustrated
+in Figure 8.5. The Sensor collects RAPL readings and HwPC samples per cgroup; the Controller,
+using the Libpfm4 library to enumerate all Performance Monitoring Unit events available on the
+host, configures which events the Sensor monitors. The Formula builds frequency-specific power
+models from these samples using Lasso regression and the APERF/MPERF MSR ratio — exactly
+as in SmartWatts — and continuously tracks model accuracy via a sliding window median error.
+When accuracy degrades beyond a threshold, the Formula applies RFE, a method that iteratively
+removes the least predictive input features from the model, to identify which currently monitored
+events are irrelevant. The Controller then replaces those events with unexplored candidates while
+retaining all events the active model already relies on. The behavioral consequence is the important
+one: the counter set the model depends on is never dropped; only irrelevant counters cycle through
+new candidates, allowing the model to converge toward a better selection as the workload type
+changes, without human intervention.
+SelfWatts is validated across three distinct Intel micro-architectures — Skylake, Broadwell, and
+Haswell — demonstrating that the zero-configuration approach converges to an accurate model
+regardless of target hardware. Two limitations are worth noting. The online exploration phase
+produces transient estimation errors that exceed those of a stable SmartWatts instance; for use cases
+demanding continuous attribution reliability — such as energy billing — this transient degradation
+is a meaningful concern. Additionally, the distributed deployment configuration, where the Formula
+runs on a remote node to reduce overhead on the monitored machine, is not experimentally validated
+in the paper.
+No reviewed model-based work resolves all three limitations without trade-offs: hardware generalizability, deployability, and workload generalizability each pull in different directions, and the
+design choices made to address one tend to introduce costs elsewhere — whether in the form of
+additional infrastructure requirements, convergence periods, or residual calibration dependencies.
+Formula-based approaches, examined in the following section, sidestep the counter-selection problem
+entirely — but impose a different kind of constraint that will become apparent from the reviewed
+works.
+
+8.2
+
+Formula-Based Approaches
+
+Formula-based approaches replace learned models with fixed analytical formulas derived from
+hardware semantics. Rather than fitting a model to training data, these tools apply formulas
+grounded in documented hardware behavior — most commonly distributing RAPL readings proportionally according to some per-process proxy for hardware activity. This design choice brings an
+important operational advantage: there is no training phase, no counter-selection procedure, and
+no offline calibration requirement, making these tools straightforward to deploy across heterogeneous fleets. The cost of this simplicity is an equally hard requirement: every source of hardware
+
+44
+
+Figure 8.4: SelfWatts four-layer architecture
+complexity that affects energy consumption must be explicitly and correctly accounted for in the
+formula. Any hardware effect absent from the formula becomes a systematic attribution error.
+The most widely deployed tools in this category share a common attribution logic: each process’s
+share of total active CPU time is read from /proc, multiplied by the RAPL socket energy delta for
+that interval, and assigned as the process’s energy for that period. Scaphandre [59] is a lightweight
+daemon that applies this logic directly against RAPL via the powercap interface. Kepler [53]
+extends the same model to support attribution at the process, container, virtual machine, and
+pod levels, integrating natively with Kubernetes cluster monitoring. KubeWatt [60] introduces a
+notable refinement: rather than distributing static power among running containers, it treats it
+as unattributed cluster overhead, and distributes dynamic power proportionally by container CPU
+utilization share computed relative to the sum across containers rather than against the node total,
+avoiding double-counting of system-level processes. PowerJoular [61] also relies on a proportional
+utilization approach but uses CPU cycles rather than time as its proxy.
+The shared limitation of this group runs deeper than individual implementation choices. CPU
+time and CPU utilization are frequency-blind proxies [62]: two processes occupying equal fractions
+of CPU time are assigned equal energy shares regardless of the voltage-frequency operating point
+at which each is executing. More broadly, this class of attribution is blind to SMT co-execution
+effects, Non-Uniform Memory Access (NUMA) topology, C-state transitions on idle cores, and
+dynamic performance boost states — all of which cause the actual power drawn by the socket to
+diverge from what a time-proportional model would predict.
+DEEP-Mon [63] targets fine-grained, per-thread power attribution for containerized workloads
+running on a Linux system, and addresses the SMT limitation that the proportional tools above
+ignore entirely. Building on the observation that there is a 0.99 linear correlation between Unhalted
+Core Cycles (UCC) and CPU power consumption [64], DEEP-Mon replaces CPU time with UCC as
+the attribution proxy. To handle SMT, it separates the cycles a thread accumulates while executing
+
+45
+
+Figure 8.5: SelfWatts deployment with Controller and Sensor
+alone on a physical core from those accumulated during concurrent execution with another thread
+via HyperThreading (HT). For solo execution phases, cycles are counted at face value. For coexecution phases, the empirically measured power increase when a physical core is shared between
+two threads is accounted for by scaling those cycles by a measured coefficient and dividing by two,
+so that each of the two co-running threads carries an equal share of the overhead — yielding a
+weighted cycle count that more accurately reflects the thread’s actual energy contribution. RAPL
+package energy is then distributed proportionally by weighted cycle share across all threads. These
+per-thread cycle counts are accumulated in kernel space via eBPF hooks on sched_switch, with the
+aggregation window — the interval over which cycles are collected before RAPL is read — adjusted
+dynamically based on context-switch frequency to avoid attributing a thread’s work to the wrong
+measurement period. The resulting per-thread attribution is then mapped to containers via cgroup
+identifiers. As illustrated in Figure 8.6, the eBPF program shares data with the user-space agent
+through a thread map, a processor topology map for HT sibling tracking, and a configuration map;
+the agent’s runtime manager selects the window length and forwards samples to the monitoring
+backend.
+
+Figure 8.6: DEEP-Mon monitoring agent structure
+DEEP-Mon explicitly models SMT, which the proportional tools do not, but operates without
+any frequency correction — cycles are counted regardless of the operating frequency at which they
+were executed. NUMA topology is not considered, DRAM energy is not attributed, and the tool
+was validated only on dual-socket servers due to an eBPF stack size constraint at the time.
+EnergAt [33] approaches the attribution problem differently, aiming for thread-level, NUMAaware energy attribution in multi-tenant environments. Its core observation is that aggregating
+resource usage across all sockets before distributing energy is incorrect in multi-socket NUMA
+systems, because each socket’s RAPL counter is independent and each socket may be operating at a
+different utilization level and power draw. EnergAt addresses this by estimating a per-thread socket
+
+46
+
+residence probability — the fraction of time each thread was scheduled on each socket — derived
+by sampling the thread’s scheduling state multiple times within each measurement interval and
+averaging those observations to approximate the continuous residence fraction. This is combined
+with the thread’s total CPU time to yield a per-socket CPU time estimate, which is used as the
+credit coefficient for that socket’s dynamic RAPL energy. Static power is subtracted from the RAPL
+total before attribution and distributed separately. For DRAM, the amount of private memory a
+process has allocated — that is, the memory pages it exclusively owns, excluding memory shared
+with other processes — per NUMA node serves as the credit coefficient for the corresponding DRAM
+domain’s dynamic energy. Both the CPU and DRAM credit coefficients are raised to empirically
+calibrated, machine-specific exponents to account for the non-linear relationship between utilization
+and power.
+
+Figure 8.7: EnergAt energy credit during parallel execution
+EnergAt’s model considers NUMA and multi-socket topology, which DEEP-Mon ignores entirely, and separately attributes both CPU and DRAM energy. It does not, however, model SMT
+co-execution or apply any frequency correction, and shared memory is excluded from DRAM attribution.
+METRION [27] represents the most complete coverage of hardware effects among the reviewed formula-based tools, jointly addressing DVFS, SMT, and NUMA within a single attribution
+model. Rather than treating an entire polling interval as a uniform block, METRION operates at
+the granularity of individual execution intervals — the time between a thread’s scheduling-in and
+scheduling-out events, captured via an eBPF hook on sched_switch. Each interval is further split
+into sub-intervals depending on whether the thread was executing alone on its physical core or in
+SMT co-execution with another thread, a distinction resolved in post-processing by examining the
+recorded scheduling timestamps of all threads on the same physical core and identifying overlapping execution intervals. For CPU attribution, UCC is scaled by the APERF/MPERF frequency
+ratio to account for DVFS effects, including Turbo Boost, which is absorbed implicitly by this realtime frequency measurement rather than modeled as a separate case. Co-execution sub-intervals
+receive an additional SMT scaling factor, matching the empirical correction used by DEEP-Mon.
+For DRAM attribution, Last Level Cache (LLC)-miss loads per DRAM component are tracked and
+remote accesses are weighted to reflect the higher energy cost of cross-NUMA memory transactions.
+As illustrated in Figure 8.8, this decomposition allows METRION to apply the correct frequency
+and SMT correction at each sub-interval rather than averaging over a coarser window. METRION
+achieves a Mean Absolute Percentage Error (MAPE) of 4.2% for CPU-bound workloads and 16.1%
+for memory-bound workloads, at a runtime overhead of 21.1% — the highest among the tools evaluated, attributed to the Python implementation. For context, across the same workloads Scaphandre
+achieves an average MAPE of 32.4% and EnergAt 69.3% for CPU attribution, with runtime overheads of 9.2% and 6.5% respectively [27]. The results across workload types are shown in Figure 8.9.
+The main limitations are the post-processing requirement for SMT phase detection, which pre-
+
+47
+
+Figure 8.8: METRION time interval decomposition
+
+(a) METRION CPU package energy results
+
+(b) METRION runtime overhead results
+
+Figure 8.9: CPU package energy attribution and runtime overhead results for METRION,
+EnergAt, and Scaphandre across CPU-bound, memory-bound, and combined workloads.
+vents live attribution, and the DRAM model’s coverage of read transactions only — write operations,
+buffered in cache and flushed during eviction, cannot be attributed to a specific execution interval,
+which the paper identifies as the likely source of the 16.1% DRAM error.
+The reviewed formula-based works vary considerably in the hardware effects they account for.
+Scaphandre, Kepler, KubeWatt, and PowerJoular rely on utilization-proportional attribution with
+no hardware-state awareness. DEEP-Mon adds SMT-aware cycle weighting but operates without
+frequency correction or NUMA awareness. EnergAt addresses multi-socket NUMA topology and
+attributes both CPU and DRAM, but ignores SMT and frequency effects. METRION jointly covers
+DVFS, SMT, and NUMA, and represents the most complete formula-based treatment among the
+reviewed works — though not without its own limitations.
+What these differences amount to, and what they reveal about the state of the field, is taken
+up in the following chapter.
+
+48
+
+CHAPTER 9
+SYNTHESIS AND COMPARISON
+
+49
+
+Table 9.1: Comparison of key energy attribution works. ∼ denotes that C-state effects are passively observed via APERF/MPERF
+frequency averaging (cores in deep idle approach zero effective frequency) but are not explicitly modelled.
+Paper
+
+Year Type
+
+Attribution Proxy
+
+WattsKit
+
+2017 Model-based
+
+HwPC (dynamically
+lected per node)
+
+DVFS C-states SMT NUMA Real-Time Key Limitations
+se-
+
+X
+
+X
+
+X
+
+X
+
+X
+
+• Counter selection depends on training
+benchmarks
+• Production workload divergence degrades
+accuracy silently
+
+SmartWatts 2020 Model-based
+
+HwPC (Pearson-selected,
+frequency-specific models)
+
+X
+
+∼
+
+×
+
+×
+
+X
+
+• Counter selection fixed after the initial
+calibration window
+• Unrepresentative calibration workloads lock
+in a poor model
+
+SelfWatts
+
+HwPC
+(online
+RFEselected, frequency-specific
+models)
+
+X
+
+∼
+
+×
+
+×
+
+X
+
+• Online counter selection introduces
+transient high error during exploration phases
+• Continuous overhead from the controller
+component
+
+DEEP-Mon 2018 Formula-based Weighted unhalted core cycles
+
+×
+
+×
+
+X
+
+×
+
+X
+
+• SMT weighting constant (1.15) is
+machine-specific
+• DVFS, C-states, and DRAM attribution
+not considered
+
+EnergAt
+
+×
+
+×
+
+×
+
+X
+
+X
+
+• Machine-specific scaling exponents (γ, σ)
+limit portability
+• SMT, frequency, and C-state effects not
+considered
+
+2021 Model-based
+
+50
+2023 Formula-based CPU time (socket residence probability) + private memory footprint
+
+METRION 2025 Formula-based Frequency-weighted cycles
+(APERF/MPERF)
++
+LLC-miss loads
+
+X
+
+∼
+
+X
+
+X
+
+×
+
+• Post-processing requirement prevents
+real-time use
+• C-state savings at socket level remain
+unresolvable despite APERF/MPERF
+observation
+• Fixed empirical constants (SMT: 1.15,
+NUMA: γ = 9.67) limit cross-platform
+generalizability
+• Runtime overhead (21.1%) limits
+production deployment
+
+51
+
+A common thread runs through the reviewed literature regardless of approach family: the
+correctness of any attribution method depends on how accurately it accounts for the hardware
+mechanisms that govern energy consumption at the level of individual cores and memory domains.
+For model-based approaches, this dependency is indirect but no less real. A learned model has the
+capacity to capture complex, non-linear hardware behaviour implicitly, but this capacity comes with
+a fundamental risk: a model that captures the energy dynamics of one context well may silently
+degrade in another, with no signal that this has occurred. The absence of deliberate consideration of
+a hardware effect — no explicit architectural provision, no targeted validation — leaves correctness
+unverifiable. For formula-based approaches, the dependency is direct and unforgiving: a hardware
+effect that is not explicitly modelled is simply absent from the attribution, regardless of how accurate
+the formula is in all other respects.
+A further observation concerns the range of strategies the model-based literature has explored
+in response to the context overfitting problem. These strategies form a rough spectrum from static
+to fully adaptive, from counter selection fixed at calibration time to continuous online revision via
+recursive feature elimination. Moving along this spectrum toward greater adaptability does reduce
+dependence on pre-deployment assumptions, but each step introduces its own costs — deployment
+constraints, convergence periods before stable attribution, or continuous computational overhead
+during production. No point on this spectrum is clearly dominant: greater adaptability buys
+portability at the cost of stability and overhead, while static approaches offer predictable behaviour
+at the cost of brittleness when conditions diverge from training.
+Formula-based approaches face a related but structurally distinct generalizability problem.
+Where model-based approaches risk overfitting to a training context, formula-based approaches
+embed their hardware assumptions directly as fixed empirical constants — power ratios for SMT
+co-execution, scaling exponents for non-linear CPU utilization, penalty factors for remote NUMA
+memory access. These constants are measured on specific hardware and applied universally, with no
+mechanism to detect when the deployment context makes them inappropriate. A tool may therefore correctly account for a hardware effect in principle while remaining numerically inaccurate
+on hardware it was not calibrated for. Resolving this portability problem, without sacrificing the
+transparency and deployability that make formula-based approaches attractive, remains an open
+challenge.
+Looking across both families, the reviewed works collectively demonstrate that fine-grained
+energy attribution is achievable and that meaningful progress has been made on the hardware
+effects that complicate it. The two families, however, face structurally different challenges. Modelbased approaches struggle with the conditions under which their accuracy holds — deployability
+and generalizability remain in tension with one another regardless of how adaptive the counter
+selection strategy becomes. Formula-based approaches struggle with completeness and portability
+— hardware effects that are not explicitly modelled are simply absent, and the fixed constants that
+encode what is modelled do not transfer freely across platforms. What Table 9.1 makes visible is
+that no existing approach resolves both dimensions simultaneously, and that this gap motivates the
+discussion that follows.
+
+52
+
+CHAPTER 10
+DISCUSSION AND GAP IDENTIFICATION
+
+The reviewed literature reveals that no existing approach to fine-grained Central Processing
+Unit (CPU) and Dynamic Random Access Memory (DRAM) energy attribution satisfies the full
+set of requirements that make such a tool practically useful. The problem is not a lack of effort
+in any single direction, but a combination of unresolved trade-offs and structural limitations that
+persist across both model-based and formula-based families.
+Model-based approaches, at their most capable, offer adaptability to hardware diversity and
+the ability to capture non-linear power behavior. SmartWatts [57] and SelfWatts [58] represent
+the furthest progress in this direction, with the latter eliminating any offline calibration requirement through continuous online counter selection. However, the overhead and transient accuracy
+degradation introduced by these mechanisms remain barriers to production deployment at scale.
+The core tension in model-based approaches — between generalizability, accuracy, and overhead —
+has not been fully resolved. A promising direction toward addressing the generalizability side of
+this tension is illustrated by PPEM-BM [65], which trains individual power models on monitored
+servers, then uses a Learning to Rank model to select the most hardware-similar pre-trained model
+for any new unmonitored node — eliminating the need for per-node retraining. The approach is
+originally motivated by server-level power estimation in bare-metal environments, but the principle
+it demonstrates is relevant more broadly: model portability through hardware-similarity ranking
+rather than online learning. As shown in Figure 10.1, the ranking model does not always select the
+optimal source model, introducing an inherent accuracy trade-off, but the direction is concrete.
+Beyond the hardware coverage and generalizability problems, the reviewed approaches share
+a second class of limitations in how they handle energy components that exist independently of
+any individual process’s work. Cadorel and Saingre [44] identify three conceptually distinct energy
+components: active energy, which reflects the marginal cost of a process’s computational work; idle
+energy, which the machine draws regardless of what processes are running; and residual energy,
+which arises from the act of having at least one core active and is correlated with the execution
+context rather than any single process’s behavior, making it impossible to cleanly attribute to any
+one process. While idle power has several established measurement approaches in the literature,
+residual energy is harder to isolate, and the only concrete measurement method proposed in the
+reviewed work is that of Kepler [52]: run two identical workloads in sequence, starting the second
+after the first is already running, and record the power increment at the moment the second workload
+launches; the difference between the total single-instance power and this increment isolates the
+residual component.
+The Greenhouse Gas Protocol [66], as invoked in Kepler [52], provides a principled basis for
+treating both idle and residual energy as shared infrastructure costs that should be accounted for
+separately rather than absorbed into per-process active attribution. Most reviewed tools do not
+follow this separation: idle energy is distributed proportionally among running processes despite
+
+53
+
+Figure 10.1: PPEM-BM estimation error vs. rank
+being entirely independent of their presence, and residual energy is silently lumped into active
+shares. The approach taken by KubeWatt [60], which treats idle power as an unattributed system
+overhead rather than dividing it among containers, is the closest alignment with this principle
+in the reviewed literature, and illustrates that the separation is both feasible and architecturally
+meaningful.
+A further and more fundamental flaw in the reviewed approaches is identified by Bellal et al.
+[36], who challenge not a specific tool but the attribution mechanism that underlies virtually all
+reviewed solutions. The shared mechanism, across both families, is to compute a per-process weight
+— from CPU time, model output, hardware counter readings, or a combination — and distribute
+total energy proportionally based on that weight. The structural problem is that this proportional
+distribution shares any change in socket-level power across all running processes, regardless of which
+core caused it.
+The most concrete failure mode involves C-states. When idle cores enter deep sleep states, the
+socket’s total power drops. A proportional model redistributes this saving across all processes, including those running on fully active cores whose workload has not changed at all. As illustrated in
+Figure 10.2, a workload running on a dedicated active core with a constant load sees its attributed
+power drop significantly when C-states are enabled on other cores — not because its actual consumption changed, but because the socket total fell and the proportional share was recalculated
+accordingly.
+This is not a calibration failure. It is a structural consequence of proportional distribution
+against a socket-level total, which has no mechanism for distinguishing energy changes that originate on idle cores from those that originate on active ones. Even METRION [27], the most
+hardware-aware formula-based tool reviewed, does not escape this limitation. METRION weights
+each thread’s contribution by its effective frequency ratio — meaning a core in a deep idle state,
+whose effective frequency approaches zero, absorbs almost none of the socket energy. This is conceptually the right response to C-states, and it mitigates the problem. But because METRION
+still distributes the socket-level total proportionally across cores, the energy savings attributable to
+a specific idle core cannot be precisely isolated, and the structural issue identified by Bellal et al.
+remains present, if partially attenuated.
+The gap that emerges is therefore threefold. First, no reviewed tool achieves joint real-time
+coverage of all relevant hardware mechanisms — Dynamic Voltage and Frequency Scaling (DVFS),
+Simultaneous Multithreading (SMT), Non-Uniform Memory Access (NUMA), C-states, and dy-
+
+54
+
+Figure 10.2: Running Average Power Limit (RAPL) vs. Kepler Package (CPU socket) (PKG)
+power under C-state settings
+namic frequency boost — without either excessive overhead or post-processing requirements that
+preclude live applicability. Second, idle and residual energy are not consistently separated from active attribution, leading to systematic misassignment that compounds with the first problem. Third,
+and most fundamentally, the proportional-distribution mechanism that is the basis of attribution in
+the reviewed literature is structurally incapable of correctly isolating energy changes that occur at
+the core level. These three dimensions together define the open problem: a method for per-process
+energy attribution that models per-core energy behavior, handles all relevant hardware state transitions correctly, treats idle and residual energy as separate components, and operates with overhead
+compatible with production deployment. No reviewed work closes all three simultaneously.
+
+55
+
+CHAPTER 11
+CONCLUSION
+
+The reviewed literature reveals that fine-grained Central Processing Unit (CPU) and Dynamic
+Random Access Memory (DRAM) energy attribution has converged around two broad methodological families — model-based and formula-based — each of which has made genuine progress
+while running into a structurally distinct ceiling. Model-based approaches have grown increasingly
+capable of adapting to hardware diversity and shifting workload conditions, with the most advanced
+tools eliminating offline calibration entirely through continuous online counter selection. Formulabased approaches have progressively extended their coverage of hardware effects, reaching a point
+where Dynamic Voltage and Frequency Scaling (DVFS), Simultaneous Multithreading (SMT), and
+Non-Uniform Memory Access (NUMA) topology can each be handled within a single analytical
+framework. Yet neither family has resolved the full problem.
+The limitations that remain are not incidental. Three persistent gaps emerge from the synthesis:
+• No reviewed tool achieves joint, real-time coverage of all relevant hardware mechanisms without either excessive overhead or a post-processing requirement that precludes live attribution.
+• Idle and residual energy are not consistently treated as separate components, and most tools
+absorb them silently into per-process active shares — a misattribution that is independent
+of, and compounds with, the accuracy of the attribution formula itself.
+• Most fundamentally, the proportional distribution mechanism that underlies virtually all
+reviewed approaches — across both families — is structurally incapable of correctly isolating
+energy changes that originate on idle cores from those that originate on active ones [36]. This
+is not a calibration problem that better training data or more expressive formulas can fix; it
+is a consequence of distributing a socket-level total without per-core visibility.
+These three dimensions together define the open problem that the reviewed literature has not
+closed: per-process CPU and DRAM energy attribution that correctly models energy behavior
+at the core level, treats the non-active components of node power as separate, and does so with
+overhead compatible with production deployment.
+
+56
+
+Final Remarks
+
+57
+
+CONCLUSION
+
+This thesis has provided a comprehensive overview of the scientific and technical landscape
+underlying fine-grained Central Processing Unit (CPU) and Dynamic Random Access Memory
+(DRAM) energy attribution in Linux systems, examining the measurement interfaces, hardware
+mechanisms, and attribution approaches that define the current state of the field.
+The analysis reveals that genuine and meaningful progress has been made. Model-based approaches have advanced from static, node-specific training pipelines toward fully adaptive, selfcalibrating systems capable of operating across diverse hardware without offline calibration. Formulabased approaches have progressively extended their coverage of hardware effects, reaching a point
+where Dynamic Voltage and Frequency Scaling (DVFS), Simultaneous Multithreading (SMT), and
+Non-Uniform Memory Access (NUMA) topology can each be addressed within a single analytical
+framework. These are real achievements, and they reflect a maturing understanding of the problem.
+Yet the synthesis also reveals that no existing approach resolves the full problem. Three structural limitations persist across both methodological families. First, no reviewed tool achieves joint,
+real-time coverage of all relevant hardware mechanisms without either excessive overhead or a postprocessing requirement that precludes live attribution. Second, idle and residual energy are not
+consistently separated from active attribution, meaning a portion of node power that is independent of any individual process’s behaviour is routinely and silently misassigned. Third, and most
+fundamentally, the proportional distribution mechanism that underlies virtually all reviewed approaches cannot correctly isolate energy changes at the granularity at which they originate — a
+consequence of distributing a socket-level total without per-core visibility, rather than a limitation
+that more accurate formulas or better-trained models can overcome.
+These gaps are not incidental. They follow directly from the hardware complexity surveyed in
+this work: a landscape in which energy is measured at the wrong granularity, in which dynamic
+behaviour continuously undermines the assumptions that simple attribution models rely on, and
+in which dividing a shared resource among concurrent consumers is structurally ambiguous. This
+analysis establishes a precise formulation of the open problem — identifying the conditions a correct
+attribution method would need to satisfy and the reasons existing tools fall short — and establishes
+a clear basis for deciding where and how existing tools can be meaningfully improved.
+
+58
+
+BIBLIOGRAPHY
+
+[1]
+
+Yan Cui et al. “Total Cost of Ownership Model for Data Center Technology Evaluation.” In: 2017 16th IEEE Intersociety Conference on Thermal and Thermomechanical Phenomena in Electronic Systems (ITherm). May 2017, pp. 936–942. doi:
+10.1109/ITHERM.2017.7992587. (Visited on 05/10/2026).
+
+[2]
+
+What Is Power Usage Effectiveness (PUE)? https://www.digitalrealty.com/resources/blog/what-is-power-usage-effectiveness?t=1778432913470?latest. (Visited on
+05/10/2026).
+
+[3]
+
+Luiz André Barroso and Urs Hölzle. “The Case for Energy-Proportional Computing.”
+In: Computer 40.12 (Dec. 2007), pp. 33–37. issn: 0018-9162. doi: 10.1109/MC.2007.
+443. (Visited on 05/10/2026).
+
+[4]
+
+Aman Kansal et al. “Virtual Machine Power Metering and Provisioning.” In: Proceedings of the 1st ACM Symposium on Cloud Computing. Indianapolis Indiana USA: ACM,
+June 2010, pp. 39–50. isbn: 978-1-4503-0036-0. doi: 10.1145/1807128.1807136. (Visited on 04/12/2026).
+
+[5]
+
+Ata E Husain Bohra and Vipin Chaudhary. “VMeter: Power Modelling for Virtualized
+Clouds.” In: 2010 IEEE International Symposium on Parallel & Distributed Processing,
+Workshops and Phd Forum (IPDPSW). Apr. 2010, pp. 1–8. doi: 10.1109/IPDPSW.
+2010.5470907. (Visited on 04/30/2026).
+
+[6]
+
+Bhavani Krishnan et al. “VM Power Metering: Feasibility and Challenges.” In: SIGMETRICS Perform. Eval. Rev. 38.3 (Jan. 2011), pp. 56–60. issn: 0163-5999. doi:
+10.1145/1925019.1925031. (Visited on 04/30/2026).
+
+[7]
+
+Kai Shen et al. “Power Containers: An OS Facility for Fine-Grained Power and Energy Management on Multicore Servers.” In: SIGARCH Comput. Archit. News 41.1
+(Mar. 2013), pp. 65–76. issn: 0163-5964. doi: 10.1145/2490301.2451124. (Visited on
+04/28/2026).
+
+[8]
+
+Liuzixuan Lin et al. “Exploding AI Power Use: An Opportunity to Rethink Grid Planning and Management.” In: Proceedings of the 15th ACM International Conference on
+Future and Sustainable Energy Systems. E-Energy ’24. New York, NY, USA: Association for Computing Machinery, May 2024, pp. 434–441. isbn: 979-8-4007-0480-2. doi:
+10.1145/3632775.3661959. (Visited on 05/09/2026).
+
+59
+
+[9]
+
+Peter Judge Have your say. Dominion Energy Admits It Can’t Meet Data Center Power
+Demands in Virginia. https://www.datacenterdynamics.com/en/news/dominionenergy-admits-it-cant-meet-data-center-power-demands-in-virginia/. May 2026. (Visited on 05/11/2026).
+
+[10]
+
+Peter Judge Have your say. EirGrid Pulls Plug on 30 Irish Data Center Projects. https://www.datacenterdynamics.com/en/news/eirgrid-pulls-plug-on-30irish-data-center-projects/. May 2026. (Visited on 05/11/2026).
+
+[11]
+
+Energy and AI – Analysis. https://www.iea.org/reports/energy-and-ai. Apr. 2025. (Visited on 05/09/2026).
+
+[12]
+
+Carole-Jean Wu et al. Beyond Efficiency: Scaling AI Sustainably. June 2024. doi:
+10.48550/arXiv.2406.05303. arXiv: 2406.05303 [cs]. (Visited on 05/09/2026).
+
+[13]
+
+Carole-Jean Wu et al. “Sustainable AI: Environmental Implications, Challenges and
+Opportunities.” In: Proceedings of Machine Learning and Systems. Ed. by D. Marculescu, Y. Chi, and C. Wu. Vol. 4. 2022, pp. 795–813.
+
+[14]
+
+Saurabhsingh Rajput and Tushar Sharma. CodeGreen: Towards Improving Precision
+and Portability in Software Energy Measurement. 2026. doi: 10.48550/ARXIV.2603.
+17924. (Visited on 05/13/2026).
+
+[15]
+
+Steven van der Vlugt et al. PowerSensor3: A Fast and Accurate Open Source Power
+Measurement Tool. 2025. doi: 10.48550/ARXIV.2504.17883. (Visited on 05/13/2026).
+
+[16]
+
+Thomas Ilsche et al. “Power Measurements for Compute Nodes: Improving Sampling
+Rates, Granularity and Accuracy.” In: 2015 Sixth International Green and Sustainable
+Computing Conference (IGSC). Las Vegas, NV, USA: IEEE, Dec. 2015, pp. 1–8. isbn:
+978-1-5090-0172-9. doi: 10.1109/IGCC.2015.7393710. (Visited on 05/11/2026).
+
+[17]
+
+Daniel Hackenberg et al. “Power Measurement Techniques on Standard Compute
+Nodes: A Quantitative Comparison.” In: 2013 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS). Austin, TX, USA: IEEE, Apr.
+2013, pp. 194–204. isbn: 978-1-4673-5779-1 978-1-4673-5776-0 978-1-4673-5778-4. doi:
+10.1109/ISPASS.2013.6557170. (Visited on 05/12/2026).
+
+[18]
+
+Mathilde Jay et al. “An Experimental Comparison of Software-Based Power Meters:
+Focus on CPU and GPU.” In: 2023 IEEE/ACM 23rd International Symposium on
+Cluster, Cloud and Internet Computing (CCGrid). Bangalore, India: IEEE, May 2023,
+pp. 106–118. isbn: 979-8-3503-0119-9. doi: 10.1109/CCGrid57682.2023.00020. (Visited on 04/07/2026).
+
+[19]
+
+Kashif Nizam Khan et al. “RAPL in Action: Experiences in Using RAPL for Power
+Measurements.” In: ACM Trans. Model. Perform. Eval. Comput. Syst. 3.2 (Mar. 2018),
+9:1–9:26. issn: 2376-3639. doi: 10.1145/3177754. (Visited on 03/19/2026).
+
+[20]
+
+Guillaume Raffin and Denis Trystram. Dissecting the Software-Based Measurement of
+CPU Energy Consumption: A Comparative Analysis. July 2024. doi: 10.48550/arXiv.
+2401.15985. arXiv: 2401.15985 [cs]. (Visited on 03/19/2026).
+
+[21]
+
+Robert Schöne et al. “Energy Efficiency Aspects of the AMD Zen 2 Architecture.” In:
+2021 IEEE International Conference on Cluster Computing (CLUSTER). Sept. 2021,
+pp. 562–571. doi: 10.1109/Cluster48925.2021.00087. arXiv: 2108.00808 [cs].
+(Visited on 03/19/2026).
+
+60
+
+[22]
+
+Philipp Gypser. “Mechanismen für die energieeffiziente Prozessor-Allokation und
+Umverteilung auf Vielkernprozessor-SystemenMechanisms for energy-efficient processor allocation and redistribution on manycore systems.” PhD thesis. BTU Cottbus Senftenberg, 2023, 2400 KB. doi: 10.26127/BTUOPEN-6385. (Visited on 05/13/2026).
+
+[23]
+
+Sandro Matheus V. N. Marques et al. “The Impact of Turbo Frequency on the Energy,
+Performance, and Aging of Parallel Applications.” In: 2019 IFIP/IEEE 27th International Conference on Very Large Scale Integration (VLSI-SoC). Oct. 2019, pp. 149–154.
+doi: 10.1109/VLSI-SoC.2019.8920389. (Visited on 05/13/2026).
+
+[24]
+
+Advanced Configuration and Power Interface (ACPI) Specification, Version 6.3. Manual. Jan. 2019.
+
+[25]
+
+Robert Schöne, Daniel Hackenberg, and Daniel Molka. “Simultaneous Multithreading
+on X86_64 Systems: An Energy Efficiency Evaluation.” In: Proceedings of the 4th Workshop on Power-Aware Computing and Systems. HotPower ’11. New York, NY, USA:
+Association for Computing Machinery, Oct. 2011, pp. 1–5. isbn: 978-1-4503-0981-3.
+doi: 10.1145/2039252.2039262. (Visited on 05/30/2026).
+
+[26]
+
+Yingmin Li et al. “Understanding the Energy Efficiency of Simultaneous Multithreading.” In: Proceedings of the 2004 International Symposium on Low Power Electronics
+and Design. ISLPED ’04. New York, NY, USA: Association for Computing Machinery, Aug. 2004, pp. 44–49. isbn: 978-1-58113-929-7. doi: 10.1145/1013235.1013251.
+(Visited on 05/15/2026).
+
+[27]
+
+Benjamin Weigell, Simon Hornung, and Bernhard Bauer. METRION: A Framework
+for Accurate Software Energy Measurement. 2025. doi: 10.48550/ARXIV.2512.06806.
+(Visited on 03/19/2026).
+
+[28]
+
+Christoph Lameter. “NUMA (Non-Uniform Memory Access): An Overview: NUMA
+Becomes More Common Because Memory Controllers Get Close to Execution Units on
+Microprocessors.” In: Queue 11.7 (July 2013), pp. 40–51. issn: 1542-7730, 1542-7749.
+doi: 10.1145/2508834.2513149. (Visited on 05/15/2026).
+
+[29]
+
+Heonjae Ha. “UNDERSTANDING AND IMPROVING THE ENERGY EFFICIENCY
+OF DRAM.” PhD thesis. Stanford, CA: Stanford University, Oct. 2018.
+
+[30]
+
+Mohammad Dashti et al. “Traffic Management: A Holistic Approach to Memory Placement on NUMA Systems.” In: SIGPLAN Not. 48.4 (Mar. 2013), pp. 381–394. issn:
+0362-1340. doi: 10.1145/2499368.2451157. (Visited on 05/15/2026).
+
+[31]
+
+Kaiqiang Zhang et al. “Power and Performance Evaluation of Memory-Intensive Applications.” In: Energies 14.14 (July 2021), p. 4089. issn: 1996-1073. doi: 10.3390/
+en14144089. (Visited on 05/15/2026).
+
+[32]
+
+Sebi Ryffel et al. Accurate Energy Attribution and Accounting for Multi-Core Systems.
+Technical Report. Center for Embedded Networked Sensing (CENS), University of
+California, Los Angeles, Jan. 2009.
+
+[33]
+
+Hongyu Hè, Michal Friedman, and Theodoros Rekatsinas. “EnergAt: Fine-Grained Energy Attribution for Multi-Tenancy.” In: Proceedings of the 2nd Workshop on Sustainable Computer Systems. July 2023, pp. 1–8. doi: 10.1145/3604930.3605716. arXiv:
+2307.05647 [cs]. (Visited on 04/09/2026).
+
+61
+
+[34]
+
+Felix Rieger and Christoph Bockisch. “Survey of Approaches for Assessing Software Energy Consumption.” In: Proceedings of the 2nd ACM SIGPLAN International Workshop
+on Comprehension of Complex Systems. CoCoS 2017. New York, NY, USA: Association for Computing Machinery, Oct. 2017, pp. 19–24. isbn: 978-1-4503-5521-6. doi:
+10.1145/3141842.3141846. (Visited on 05/30/2026).
+
+[35]
+
+Luca Ardito et al. “Methodological Guidelines for Measuring Energy Consumption of
+Software Applications.” In: Scientific Programming 2019.1 (2019), p. 5284645. issn:
+1875-919X. doi: 10.1155/2019/5284645. (Visited on 05/30/2026).
+
+[36]
+
+Zouhir Bellal et al. “Investigating the Potential of Kepler Toward Power Observability
+for Sustainable Cloud Computing.” In: IEEE Transactions on Green Communications
+and Networking 10 (2026), pp. 2118–2135. issn: 2473-2400. doi: 10.1109/TGCN.2026.
+3660816. (Visited on 05/07/2026).
+
+[37]
+
+What Is eBPF? An Introduction and Deep Dive into the eBPF Technology.
+https://ebpf.io/what-is-ebpf/. (Visited on 05/23/2026).
+
+[38]
+
+Perf_event_open(2) - Linux Manual Page. https://man7.org/linux/manpages/man2/perf_event_open.2.html. (Visited on 06/01/2026).
+
+[39]
+
+Proc(5) - Linux Manual Page. https://man7.org/linux/man-pages/man5/proc.5.html.
+(Visited on 06/01/2026).
+
+[40]
+
+Control Group v2 — The Linux Kernel Documentation. https://docs.kernel.org/adminguide/cgroup-v2.html. (Visited on 06/01/2026).
+
+[41]
+
+Libvirt: The
+06/01/2026).
+
+[42]
+
+Lasse F. Wolff Anthony, Benjamin Kanding, and Raghavendra Selvan. Carbontracker:
+Tracking and Predicting the Carbon Footprint of Training Deep Learning Models. July
+2020. doi: 10.48550/arXiv.2007.03051. arXiv: 2007.03051 [cs.CY]. (Visited on
+05/22/2026).
+
+[43]
+
+Luiz André Barroso, Urs Hölzle, and Parthasarathy Ranganathan. The Datacenter as
+a Computer: Designing Warehouse-Scale Machines. Synthesis Lectures on Computer
+Architecture. Cham: Springer International Publishing, 2019. isbn: 978-3-031-00633-3
+978-3-031-01761-2. doi: 10.1007/978-3-031-01761-2. (Visited on 05/22/2026).
+
+[44]
+
+Emile Cadorel and Dimitri Saingre. “A Protocol to Assess the Accuracy of ProcessLevel Power Models.” In: 2024 IEEE International Conference on Cluster Computing
+(CLUSTER). Kobe, Japan: IEEE, Sept. 2024, pp. 74–84. isbn: 979-8-3503-5871-1. doi:
+10.1109/CLUSTER59578.2024.00014. (Visited on 04/12/2026).
+
+[45]
+
+Pierre Jacquet et al. “CINERGY: Reasoning over the Worst Case Power Consumption of Cloud Virtual Machines.” In: 2025 IEEE 25th International Symposium on
+Cluster, Cloud and Internet Computing (Ccgrid). 2025, pp. 586–589. doi: 10.1109/
+CCGRID64434.2025.00024.
+
+[46]
+
+Mian Dong, Tian Lan, and Lin Zhong. “Rethink Energy Accounting with Cooperative Game Theory.” In: Proceedings of the 20th Annual International Conference on
+Mobile Computing and Networking. MobiCom ’14. New York, NY, USA: Association for Computing Machinery, Sept. 2014, pp. 531–542. isbn: 978-1-4503-2783-1. doi:
+10.1145/2639108.2639128. (Visited on 04/24/2026).
+
+Virtualization
+
+API.
+
+https://libvirt.org/index.html.
+
+62
+
+(Visited
+
+on
+
+[47]
+
+Weixiang Jiang et al. “Virtual Machine Power Accounting with Shapley Value.” In:
+2017 IEEE 37th International Conference on Distributed Computing Systems (ICDCS).
+Atlanta, GA, USA: IEEE, June 2017, pp. 1683–1693. isbn: 978-1-5386-1792-2. doi:
+10.1109/ICDCS.2017.235. (Visited on 05/19/2026).
+
+[48]
+
+Feitong Qiao, Yiming Fang, and Asaf Cidon. “Energy-Aware Process Scheduling in
+Linux.” In: SIGENERGY Energy Inform. Rev. 4.5 (Apr. 2025), pp. 91–97. doi: 10.
+1145/3727200.3727214.
+
+[49]
+
+Zouhir Bellal et al. EC6: Enhancing Energy Efficiency in Kubernetes Through Dynamic Extension of CPU Deep Idle States (C6). Oct. 2025. doi: 10.36227/techrxiv.
+176158640.04381493/v1. (Visited on 05/02/2026).
+
+[50]
+
+W. Lloyd Bircher and Lizy K. John. “Complete System Power Estimation: A TrickleDown Approach Based on Performance Events.” In: 2007 IEEE International Symposium on Performance Analysis of Systems & Software. San Jose, CA, USA: IEEE, Apr.
+2007, pp. 158–168. isbn: 978-1-4244-1081-1 978-1-4244-1082-8. doi: 10.1109/ISPASS.
+2007.363746. (Visited on 05/23/2026).
+
+[51]
+
+Jonathan Bader et al. Learning Process Energy Profiles from Node-Level Power Data.
+Nov. 2025. doi: 10.48550/arXiv.2511.13155. arXiv: 2511.13155 [cs]. (Visited on
+03/30/2026).
+
+[52]
+
+Marcelo Amaral et al. “Process-Based Efficient Power Level Exporter.” In: 2024 IEEE
+17th International Conference on Cloud Computing (CLOUD). July 2024, pp. 456–467.
+doi: 10.1109/CLOUD62652.2024.00058. (Visited on 05/03/2026).
+
+[53]
+
+Sustainable-Computing-Io/Kepler. Sustainable Computing. May 2026. (Visited on
+05/23/2026).
+
+[54]
+
+Maxime Colmant et al. “Process-Level Power Estimation in VM-based Systems.” In:
+Proceedings of the Tenth European Conference on Computer Systems. EuroSys ’15. New
+York, NY, USA: Association for Computing Machinery, Apr. 2015, pp. 1–14. isbn: 9781-4503-3238-5. doi: 10.1145/2741948.2741971. (Visited on 04/30/2026).
+
+[55]
+
+Hemant Mehta et al. WattsApp: Power-Aware Container Scheduling. May 2020. doi:
+10.48550/arXiv.2006.00342. arXiv: 2006.00342 [cs]. (Visited on 04/29/2026).
+
+[56]
+
+Maxime Colmant et al. “WattsKit: Software-Defined Power Monitoring of Distributed
+Systems.” In: 2017 17th IEEE/ACM International Symposium on Cluster, Cloud and
+Grid Computing (CCGRID). Madrid, Spain: IEEE, May 2017, pp. 514–523. isbn: 9781-5090-6611-7. doi: 10.1109/CCGRID.2017.27. (Visited on 04/24/2026).
+
+[57]
+
+Guillaume Fieni, Romain Rouvoy, and Lionel Seinturier. “SmartWatts: Self-Calibrating
+Software-Defined Power Meter for Containers.” In: 2020 20th IEEE/ACM International
+Symposium on Cluster, Cloud and Internet Computing (CCGRID). May 2020, pp. 479–
+488. doi: 10.1109/CCGrid49817.2020.00-45. (Visited on 03/19/2026).
+
+[58]
+
+Guillaume Fieni, Romain Rouvoy, and Lionel Seiturier. “SelfWatts: On-the-fly Selection of Performance Events to Optimize Software-defined Power Meters.” In: 2021
+IEEE/ACM 21st International Symposium on Cluster, Cloud and Internet Computing (CCGrid). Melbourne, Australia: IEEE, May 2021, pp. 324–333. isbn: 978-1-72819586-5. doi: 10.1109/CCGrid51090.2021.00042. (Visited on 04/12/2026).
+
+[59]
+
+Introduction - Scaphandre Documentation. https://hubblo-org.github.io/scaphandredocumentation/index.html. (Visited on 03/19/2026).
+63
+
+[60]
+
+Bjorn Pijnacker, Brian Setz, and Vasilios Andrikopoulos. Container-Level Energy Observability in Kubernetes Clusters. Apr. 2025. doi: 10 . 48550 / arXiv . 2504 . 10702.
+arXiv: 2504.10702 [cs]. (Visited on 05/04/2026).
+
+[61]
+
+How PowerJoular Works - PowerJoular Documentation. https://joular.github.io/powerjoular/ref/how_it_works.html. (Visited on 05/03/2026).
+
+[62]
+
+Md Muzakkir Hussain, Abdullah Muslim, and Stephan Recker. “Understanding the
+Energy Observability of Microservice Applications in Edge-Cloud Environments.” In:
+2025 IEEE 11th International Conference on Edge Computing and Scalable Cloud
+(EdgeCom). Nov. 2025, pp. 79–84. doi: 10.1109/EdgeCom66327.2025.00020. (Visited
+on 05/05/2026).
+
+[63]
+
+Rolando Brondolin, Tommaso Sardelli, and Marco D. Santambrogio. “DEEP-Mon: Dynamic and Energy Efficient Power Monitoring for Container-Based Infrastructures.” In:
+2018 IEEE International Parallel and Distributed Processing Symposium Workshops
+(IPDPSW). May 2018, pp. 676–684. doi: 10.1109/IPDPSW.2018.00110. (Visited on
+04/27/2026).
+
+[64]
+
+Yan Zhai et al. “HaPPy: Hyperthread-aware Power Profiling Dynamically.” In: 2014
+USENIX Annual Technical Conference (USENIX ATC 14). Philadelphia, PA: USENIX
+Association, June 2014, pp. 211–217. isbn: 978-1-931971-10-2.
+
+[65]
+
+Maxime Agusti et al. “PPEM-BM: Portable Power Estimation Methodology for Bare
+Metal Servers.” In: 2025 IEEE 31th International Conference on Parallel and Distributed Systems (ICPADS). Hefei, China: IEEE, Dec. 2025, pp. 1–8. isbn: 979-8-33154901-5. doi: 10.1109/ICPADS67057.2025.11323049. (Visited on 03/30/2026).
+
+[66]
+
+World Resources Institute} and {Global e-Sustainability Initiative} and {Carbon Trust.
+ICT Sector Guidance Built on the GHG Protocol Product Life Cycle Accounting
+and Reporting Standard. Tech. rep. Greenhouse Gas Protocol, July 2017. (Visited on
+05/30/2026).
+
+[67]
+
+Ramon Bertran et al. “Decomposable and Responsive Power Models for Multicore Processors Using Performance Counters.” In: Proceedings of the 24th ACM International
+Conference on Supercomputing. ICS ’10. New York, NY, USA: Association for Computing Machinery, June 2010, pp. 147–158. isbn: 978-1-4503-0018-6. doi: 10.1145/
+1810085.1810108. (Visited on 05/21/2026).
+
+[68]
+
+Kepler/Docs/Developer/Power-Attribution-Guide.Md at Main · SustainableComputing-Io/Kepler.
+https://github.com/sustainable-computing-io/kepler/blob/main/docs/developer/power-attribution-guide.md. (Visited on 05/03/2026).
+
+Note 1: All of the links in the bibliography were accessible between Mars and June 2026.
+Note 2: You may access them using the web archive at https://web.archive.org
+
+64
+
+

@@ -3,9 +3,13 @@ version: '3.2'
 services:
 
   scaphandre:
-    image: scaphandre-dev
-    ports: 
-      - "8089:8080"
+    build:
+      context: ..
+    image: scaphandre-v1-dev
+    container_name: v1-scaphandre
+    privileged: true
+    ports:
+      - "8081:8080"
     volumes:
       - type: bind
         source: /proc
@@ -14,23 +18,52 @@ services:
         source: /sys/class/powercap
         target: /sys/class/powercap
       - type: bind
+        source: /sys/kernel/debug
+        target: /sys/kernel/debug
+        read_only: true
+      - type: bind
+        source: /sys/fs/bpf
+        target: /sys/fs/bpf
+      - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock
-    command: ["-vvvv", "prometheus", "--containers"] 
+    command: ["-vvvv", "prometheus", "--containers"]
     environment:
       RUST_BACKTRACE: "full"
     networks:
       - scaphandre-network
-    
+
   prometheus:
+    container_name: v1-prometheus
     build:
       context: ./prom-dev
-    ports: 
-      - "9099:9090"
-    volumes: 
-      - promdata-scaphandre:/prometheus 
+    ports:
+      - "9091:9090"
+    volumes:
+      - promdata-scaphandre:/prometheus
     networks:
       - scaphandre-network
+
+  grafana:
+    container_name: v1-grafana
+    build:
+      context: ./grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "secret"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/var/lib/grafana/dashboards/sample/sample-dashboard.json"
+    depends_on:
+      - prometheus
+    ports:
+      - "3001:3000"
+    networks:
+      - scaphandre-network
+    volumes:
+      - type: bind
+        source: "./dashboards/sample-dashboard.json"
+        target: "/var/lib/grafana/dashboards/sample/sample-dashboard.json"
+      - type: bind
+        source: "./grafana/sample-dashboard.json"
+        target: "/var/lib/grafana/dashboards/sample-dashboard.json"
 
 volumes:
   promdata-scaphandre:
@@ -40,4 +73,4 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 192.168.33.0/24
+        - subnet: 192.168.34.0/24
