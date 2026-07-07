@@ -1,3 +1,4 @@
+name: scaphandre-v1
 version: '3.2'
 
 services:
@@ -41,6 +42,9 @@ services:
       - "9091:9090"
     volumes:
       - promdata-scaphandre:/prometheus
+      - type: bind
+        source: "./prom-dev/prometheus.yml"
+        target: "/etc/prometheus/prometheus.yml"
     networks:
       - scaphandre-network
 

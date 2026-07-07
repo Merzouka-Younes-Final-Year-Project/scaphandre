@@ -1,5 +1,3 @@
-
-
 # my global config
 global:
   scrape_interval:     5s
@@ -28,12 +26,10 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-- job_name: 'scaphandre'
+  - job_name: 'scaphandre'
     # metrics_path defaults to '/metrics'
     # scheme defaults to 'http'.
     fallback_scrape_protocol: PrometheusText0.0.4
 
     static_configs:
       - targets: ['scaphandre:8080']
-
-
