@@ -57,6 +57,7 @@ services:
     networks:
       - scaphandre-network
     volumes:
+      - grafanadata:/var/lib/grafana
       - type: bind
         source: "./dashboards/sample-dashboard.json"
         target: "/var/lib/grafana/dashboards/sample/sample-dashboard.json"
@@ -66,6 +67,7 @@ services:
 
 volumes:
   promdata-scaphandre:
+  grafanadata:
 
 networks:
   scaphandre-network:
